@@ -43,11 +43,7 @@ fn initialize_logging() {
         .set_max_level(LevelFilter::Trace)
         .build();
 
-    let _ = CombinedLogger::init(vec![WriteLogger::new(
-        LevelFilter::Trace,
-        config,
-        log_file,
-    )]);
+    let _ = CombinedLogger::init(vec![WriteLogger::new(LevelFilter::Trace, config, log_file)]);
 }
 
 #[unsafe(no_mangle)]

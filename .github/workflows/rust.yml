@@ -183,7 +183,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CEF_PATH }}
-          key: libcef
+          key: cef-windows32-${{ hashFiles('cef-distribution.json') }}
 
       - name: Install DirectX SDK
         if: steps.dx-cache.outputs.cache-hit != 'true'
@@ -194,12 +194,9 @@ jobs:
           rm -fR _DX*_ _DX*_.exe
         shell: bash
 
-      - name: Download CEF static library
+      - name: Download CEF distribution
         if: steps.cef-cache.outputs.cache-hit != 'true'
-        run: |
-          curl -L https://github.com/ZOTTCE/samp-cef/releases/download/v1.1-beta/libcef.lib -o libcef.lib
-          mkdir -p $CEF_PATH
-          mv libcef.lib $CEF_PATH/libcef.lib
+        run: node scripts/download-cef.mjs --output "$CEF_PATH"
         shell: bash
 
       - name: Install stable + i686 target (MSVC)
@@ -235,13 +232,9 @@ jobs:
 
       - name: Make a package
         run: |
-          mkdir redist && cd redist
-          curl -L https://github.com/ZOTTCE/samp-cef/releases/download/v1.1-beta/cef.zip -o cef_redist.zip
-          7z x cef_redist.zip -ocef
-          cp ../target/i686-pc-windows-msvc/release/client.dll cef/client.dll
-          cp ../target/i686-pc-windows-msvc/release/renderer.exe cef/renderer.exe
-          cp ../target/i686-pc-windows-msvc/release/loader.dll cef.asi
-          7z a -tzip cef.zip cef.asi cef
+          node scripts/package-client.mjs --cef "$CEF_PATH" --output redist
+          cd redist
+          7z a -tzip cef.zip cef.asi cef package-manifest.json
         shell: bash
 
       - uses: actions/upload-artifact@v4

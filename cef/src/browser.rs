@@ -266,7 +266,7 @@ impl Frame {
     }
 
     pub fn context(&self) -> V8Context {
-        let get_ctx = self.inner.get_v8context.unwrap();
+        let get_ctx = self.inner.get_v8_context.unwrap();
         let ctx = unsafe { get_ctx(self.inner.get_mut()) };
 
         V8Context::from_raw(ctx)

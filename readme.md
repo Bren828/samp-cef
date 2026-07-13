@@ -39,7 +39,7 @@ And also all client-side parts (`cef.asi`, `client.dll`, `renderer.exe`).
 ### Dependencies
 - [Rust compiler (nightly) with `i686-windows-pc-msvc` toolchain](https://rust-lang.org)
 - Prebuilt CEF with proprietary codes (if you wanna use streams). I had one for you in releases. (Client only)
-- Environment variable `CEF_PATH` that points to `libcef.lib` (client only).
+- Environment variable `CEF_PATH` that points to the CEF distribution root (client only). The import library must be at `Release/libcef.lib`.
     - In powershell it's like `$env:CEF_PATH="C:/some/path"`
     - Then build
 - DirectX SDK (June 2010) for client builds; set `DX_SDK` to `DXSDK/Lib/x86`.
@@ -68,7 +68,7 @@ scripts/build-openmp-component.sh --openmp-root /path/to/open.mp --server-root /
 It builds `openmp-component` and installs it into `<server>/components` when `--server-root` is provided. More details are in [docs/build.md](docs/build.md) and [openmp-component/README.md](openmp-component/README.md).
 
 ### Cross-compiling the Windows client (macOS/Linux)
-Use `scripts/build-client-win32.sh` to build `client`, `renderer`, and `loader` for `i686-pc-windows-msvc` on non-Windows hosts. It relies on `cargo-xwin` (`cargo install cargo-xwin --locked`), `7z` for extracting the DirectX SDK, and downloads `libcef.lib` if `CEF_PATH` is not set. The script can also download/extract the DirectX SDK if `DX_SDK` is not set.
+Use `scripts/build-client-win32.sh` to build `client`, `renderer`, and `loader` for `i686-pc-windows-msvc` on non-Windows hosts. It relies on `cargo-xwin` (`cargo install cargo-xwin --locked`), Node.js, and `7z` for extracting the DirectX SDK. If `CEF_PATH` is not set, the script downloads and verifies the exact CEF distribution from `cef-distribution.json`. The script can also download/extract the DirectX SDK if `DX_SDK` is not set.
 
 also the client plugin can be built using OpenAL for sound ([rodio](https://crates.io/crates/rodio) by default). to do that compile the client without default features. for example:
 ```

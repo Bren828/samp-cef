@@ -96,26 +96,43 @@ struct AssetResourceHandler {
     body: Vec<u8>,
     offset: usize,
     mime_type: String,
+    charset: String,
     status_code: i32,
     status_text: String,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ContentType {
+    mime_type: &'static str,
+    charset: Option<&'static str>,
+}
+
+const TEXT_PLAIN_UTF8: ContentType = ContentType {
+    mime_type: "text/plain",
+    charset: Some("utf-8"),
+};
 
 impl AssetResourceHandler {
     fn reset(&mut self) {
         self.body.clear();
         self.offset = 0;
         self.mime_type.clear();
+        self.charset.clear();
         self.status_code = 0;
         self.status_text.clear();
     }
 
     fn set_response(
-        &mut self, status_code: i32, status_text: &str, mime_type: &str, body: Vec<u8>,
+        &mut self, status_code: i32, status_text: &str, content_type: ContentType, body: Vec<u8>,
     ) {
         self.body = body;
         self.offset = 0;
         self.mime_type.clear();
-        self.mime_type.push_str(mime_type);
+        self.mime_type.push_str(content_type.mime_type);
+        self.charset.clear();
+        if let Some(charset) = content_type.charset {
+            self.charset.push_str(charset);
+        }
         self.status_code = status_code;
         self.status_text.clear();
         self.status_text.push_str(status_text);
@@ -129,7 +146,7 @@ impl AssetResourceHandler {
             self.set_response(
                 405,
                 "Method Not Allowed",
-                "text/plain; charset=utf-8",
+                TEXT_PLAIN_UTF8,
                 b"Method Not Allowed".to_vec(),
             );
             return;
@@ -139,40 +156,39 @@ impl AssetResourceHandler {
         let parsed = match Url::parse(&request_url) {
             Ok(url) => url,
             Err(_) => {
-                self.set_response(400, "Bad Request", "text/plain; charset=utf-8", Vec::new());
+                self.set_response(400, "Bad Request", TEXT_PLAIN_UTF8, Vec::new());
                 return;
             }
         };
 
         let Some(path) = resolve_asset_request_path(&parsed) else {
-            self.set_response(403, "Forbidden", "text/plain; charset=utf-8", Vec::new());
+            self.set_response(403, "Forbidden", TEXT_PLAIN_UTF8, Vec::new());
             return;
         };
 
         match fs::read(&path) {
             Ok(body) => {
                 let body = if method == "HEAD" { Vec::new() } else { body };
-                self.set_response(200, "OK", mime_type_for_path(&path), body);
+                self.set_response(200, "OK", content_type_for_path(&path), body);
             }
 
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                self.set_response(404, "Not Found", "text/plain; charset=utf-8", Vec::new());
+                self.set_response(404, "Not Found", TEXT_PLAIN_UTF8, Vec::new());
             }
 
             Err(_) => {
-                self.set_response(
-                    500,
-                    "Internal Server Error",
-                    "text/plain; charset=utf-8",
-                    Vec::new(),
-                );
+                self.set_response(500, "Internal Server Error", TEXT_PLAIN_UTF8, Vec::new());
             }
         }
     }
 }
 
-pub fn register_custom_scheme(registrar: *mut cef_scheme_registrar_t) {
-    let result = cef::scheme::register_custom_scheme(registrar, ASSET_SCHEME, ASSET_SCHEME_OPTIONS);
+/// # Safety
+/// `registrar` must be the valid registrar supplied by CEF to the app callback.
+pub unsafe fn register_custom_scheme(registrar: *mut cef_scheme_registrar_t) {
+    let result = unsafe {
+        cef::scheme::register_custom_scheme(registrar, ASSET_SCHEME, ASSET_SCHEME_OPTIONS)
+    };
     log::trace!("register_custom_scheme => {}", result);
 }
 
@@ -296,8 +312,13 @@ extern "system" fn resource_get_response_headers(
     this: *mut cef_resource_handler_t, response: *mut cef_response_t, response_length: *mut i64,
     _redirect_url: *mut cef_string_t,
 ) {
+    if response.is_null() {
+        return;
+    }
+
     let obj: &mut Wrapper<cef_resource_handler_t, AssetResourceHandler> = Wrapper::unwrap(this);
     let mime_type = CefString::new(&obj.interface.mime_type);
+    let charset = CefString::new(&obj.interface.charset);
     let status_text = CefString::new(&obj.interface.status_text);
 
     unsafe {
@@ -313,10 +334,24 @@ extern "system" fn resource_get_response_headers(
             set_mime_type(response, mime_type.as_cef_string());
         }
 
+        if !obj.interface.charset.is_empty()
+            && let Some(set_charset) = (*response).set_charset
+        {
+            set_charset(response, charset.as_cef_string());
+        }
+
         if !response_length.is_null() {
             *response_length = obj.interface.body.len() as i64;
         }
     }
+
+    log::trace!(
+        "asset response: status={} mime_type={} charset={} length={}",
+        obj.interface.status_code,
+        obj.interface.mime_type,
+        obj.interface.charset,
+        obj.interface.body.len()
+    );
 }
 
 extern "system" fn resource_skip(
@@ -613,32 +648,135 @@ fn component_eq(component: &std::ffi::OsStr, expected: &str) -> bool {
     component.to_string_lossy().eq_ignore_ascii_case(expected)
 }
 
-fn mime_type_for_path(path: &Path) -> &'static str {
+fn content_type_for_path(path: &Path) -> ContentType {
     match path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .as_deref()
     {
-        Some("css") => "text/css; charset=utf-8",
-        Some("csv") => "text/csv; charset=utf-8",
-        Some("gif") => "image/gif",
-        Some("htm") | Some("html") => "text/html; charset=utf-8",
-        Some("jpeg") | Some("jpg") => "image/jpeg",
-        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("mp3") => "audio/mpeg",
-        Some("ogg") => "audio/ogg",
-        Some("png") => "image/png",
-        Some("svg") => "image/svg+xml",
-        Some("txt") => "text/plain; charset=utf-8",
-        Some("wasm") => "application/wasm",
-        Some("webm") => "video/webm",
-        Some("webp") => "image/webp",
-        Some("woff") => "font/woff",
-        Some("woff2") => "font/woff2",
-        Some("xml") => "application/xml; charset=utf-8",
-        _ => "application/octet-stream",
+        Some("css") => ContentType {
+            mime_type: "text/css",
+            charset: Some("utf-8"),
+        },
+        Some("csv") => ContentType {
+            mime_type: "text/csv",
+            charset: Some("utf-8"),
+        },
+        Some("gif") => ContentType {
+            mime_type: "image/gif",
+            charset: None,
+        },
+        Some("htm") | Some("html") => ContentType {
+            mime_type: "text/html",
+            charset: Some("utf-8"),
+        },
+        Some("jpeg") | Some("jpg") => ContentType {
+            mime_type: "image/jpeg",
+            charset: None,
+        },
+        Some("js") | Some("mjs") => ContentType {
+            mime_type: "text/javascript",
+            charset: Some("utf-8"),
+        },
+        Some("json") => ContentType {
+            mime_type: "application/json",
+            charset: Some("utf-8"),
+        },
+        Some("mp3") => ContentType {
+            mime_type: "audio/mpeg",
+            charset: None,
+        },
+        Some("m4a") => ContentType {
+            mime_type: "audio/mp4",
+            charset: None,
+        },
+        Some("mp4") => ContentType {
+            mime_type: "video/mp4",
+            charset: None,
+        },
+        Some("ogg") => ContentType {
+            mime_type: "audio/ogg",
+            charset: None,
+        },
+        Some("png") => ContentType {
+            mime_type: "image/png",
+            charset: None,
+        },
+        Some("svg") => ContentType {
+            mime_type: "image/svg+xml",
+            charset: None,
+        },
+        Some("txt") => TEXT_PLAIN_UTF8,
+        Some("wasm") => ContentType {
+            mime_type: "application/wasm",
+            charset: None,
+        },
+        Some("webm") => ContentType {
+            mime_type: "video/webm",
+            charset: None,
+        },
+        Some("webp") => ContentType {
+            mime_type: "image/webp",
+            charset: None,
+        },
+        Some("woff") => ContentType {
+            mime_type: "font/woff",
+            charset: None,
+        },
+        Some("woff2") => ContentType {
+            mime_type: "font/woff2",
+            charset: None,
+        },
+        Some("xml") => ContentType {
+            mime_type: "application/xml",
+            charset: Some("utf-8"),
+        },
+        _ => ContentType {
+            mime_type: "application/octet-stream",
+            charset: None,
+        },
     }
 }
 
+#[cfg(test)]
+mod content_type_tests {
+    use super::{ContentType, content_type_for_path};
+    use std::path::Path;
+
+    #[test]
+    fn text_types_keep_charset_separate_from_mime_type() {
+        assert_eq!(
+            content_type_for_path(Path::new("index.HTML")),
+            ContentType {
+                mime_type: "text/html",
+                charset: Some("utf-8"),
+            }
+        );
+        assert_eq!(
+            content_type_for_path(Path::new("app.js")),
+            ContentType {
+                mime_type: "text/javascript",
+                charset: Some("utf-8"),
+            }
+        );
+    }
+
+    #[test]
+    fn binary_types_do_not_declare_a_charset() {
+        assert_eq!(
+            content_type_for_path(Path::new("movie.webm")),
+            ContentType {
+                mime_type: "video/webm",
+                charset: None,
+            }
+        );
+        assert_eq!(
+            content_type_for_path(Path::new("movie.mp4")),
+            ContentType {
+                mime_type: "video/mp4",
+                charset: None,
+            }
+        );
+    }
+}

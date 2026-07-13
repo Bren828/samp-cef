@@ -168,8 +168,8 @@ macro_rules! impl_rc {
 impl_rc!(cef_browser_t);
 impl_rc!(cef_frame_t);
 impl_rc!(cef_browser_host_t);
-impl_rc!(cef_v8context_t);
-impl_rc!(cef_v8value_t);
+impl_rc!(cef_v8_context_t);
+impl_rc!(cef_v8_value_t);
 impl_rc!(cef_process_message_t);
 impl_rc!(cef_list_value_t);
 impl_rc!(cef_task_t);

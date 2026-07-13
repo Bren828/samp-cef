@@ -155,9 +155,11 @@ impl App for Application {
         Some(self.clone())
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn on_register_custom_schemes(&self, registrar: *mut cef_sys::cef_scheme_registrar_t) {
-        let result =
-            cef::scheme::register_custom_scheme(registrar, ASSET_SCHEME, ASSET_SCHEME_OPTIONS);
+        let result = unsafe {
+            cef::scheme::register_custom_scheme(registrar, ASSET_SCHEME, ASSET_SCHEME_OPTIONS)
+        };
         if !result {
             error_message_box(
                 "CEF renderer error",

@@ -10,8 +10,8 @@ use cef_sys::{
     cef_audio_handler_t, cef_browser_t, cef_client_t, cef_context_menu_handler_t,
     cef_dialog_handler_t, cef_display_handler_t, cef_download_handler_t, cef_drag_handler_t,
     cef_find_handler_t, cef_focus_handler_t, cef_frame_t, cef_jsdialog_handler_t,
-    cef_keyboard_handler_t, cef_life_span_handler_t, cef_load_handler_t, cef_process_message_t,
-    cef_render_handler_t, cef_request_handler_t,
+    cef_keyboard_handler_t, cef_life_span_handler_t, cef_load_handler_t, cef_permission_handler_t,
+    cef_process_message_t, cef_render_handler_t, cef_request_handler_t,
 };
 
 // audio
@@ -128,6 +128,16 @@ extern "system" fn request(_this: *mut cef_client_t) -> *mut cef_request_handler
     null_mut()
 }
 
+extern "system" fn permission<I: Client>(this: *mut cef_client_t) -> *mut cef_permission_handler_t {
+    let obj: &mut Wrapper<_, I> = Wrapper::unwrap(this);
+
+    if let Some(handler) = obj.interface.permission_handler() {
+        super::permission_handler::wrap(handler)
+    } else {
+        null_mut()
+    }
+}
+
 // message received
 
 extern "system" fn on_process_message<I: Client>(
@@ -166,6 +176,7 @@ pub fn wrap<T: Client>(client: T) -> *mut cef_client_t {
     object.get_life_span_handler = Some(lifespan::<T>);
     object.on_process_message_received = Some(on_process_message::<T>);
     object.get_request_handler = Some(request);
+    object.get_permission_handler = Some(permission::<T>);
     object.get_render_handler = Some(render::<T>);
     object.get_load_handler = Some(load::<T>);
     object.get_keyboard_handler = Some(keyboard);

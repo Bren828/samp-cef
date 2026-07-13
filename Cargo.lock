@@ -385,7 +385,7 @@ dependencies = [
 [[package]]
 name = "client-api"
 version = "1.0.0"
-source = "git+https://github.com/zottce/samp-client-api.git?rev=886d15e#886d15ebaa869b0dfe7896af94722fa07b50939d"
+source = "git+https://github.com/zottce/samp-client-api.git?rev=5e3580d0184922c886116724098eae84bc10cf92#5e3580d0184922c886116724098eae84bc10cf92"
 dependencies = [
  "log",
  "retour",

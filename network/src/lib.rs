@@ -174,20 +174,18 @@ async fn worker_task(
 
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
-            Command::Connect(addr, peer_id) => {
-                match endpoint.connect(addr, "samp.cef") {
-                    Ok(connecting) => {
-                        tokio::spawn(process_connection(
-                            connecting,
-                            event_tx.clone(),
-                            Some(peer_id),
-                        ));
-                    }
-                    Err(_) => {
-                        let _ = event_tx.send(WorkerEvent::ConnectionError(peer_id));
-                    }
+            Command::Connect(addr, peer_id) => match endpoint.connect(addr, "samp.cef") {
+                Ok(connecting) => {
+                    tokio::spawn(process_connection(
+                        connecting,
+                        event_tx.clone(),
+                        Some(peer_id),
+                    ));
                 }
-            }
+                Err(_) => {
+                    let _ = event_tx.send(WorkerEvent::ConnectionError(peer_id));
+                }
+            },
 
             Command::Close => {
                 endpoint.close(0u32.into(), &[]);

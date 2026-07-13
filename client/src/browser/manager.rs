@@ -47,6 +47,7 @@ pub struct Manager {
     audio: Arc<Audio>,
     ready_callbacks: HashMap<u32, Vec<BrowserReadyCallback>>,
     clients_on_txd: Vec<ExternalClient>,
+    pending_object_ids: HashMap<u32, Vec<i32>>,
     focused: Option<u32>,
     focused_queue: VecDeque<u32>,
     input_corrupted: bool,
@@ -76,6 +77,7 @@ impl Manager {
             clients: HashMap::new(),
             ready_callbacks: HashMap::new(),
             clients_on_txd: Vec::new(),
+            pending_object_ids: HashMap::new(),
             view_height: 0,
             view_width: 0,
             prev_fps: 60,
@@ -136,10 +138,41 @@ impl Manager {
         };
 
         self.clients_on_txd.push(ext_client);
+
+        if let Some(object_ids) = self.pending_object_ids.remove(&ext.id) {
+            log::trace!(
+                "Applying {} pending object attachment(s) to browser {}",
+                object_ids.len(),
+                ext.id
+            );
+
+            for object_id in object_ids {
+                self.browser_append_to_object(ext.id, object_id);
+            }
+        }
     }
 
     #[inline]
     pub fn browser_append_to_object(&mut self, id: u32, object_id: i32) {
+        log::trace!("Attaching external browser {} to object {}", id, object_id);
+
+        if !self
+            .clients_on_txd
+            .iter()
+            .any(|client| client.browser.id() == id)
+        {
+            log::trace!(
+                "Queuing object {} attachment until external browser {} is created",
+                object_id,
+                id
+            );
+            self.pending_object_ids
+                .entry(id)
+                .or_default()
+                .push(object_id);
+            return;
+        }
+
         self.audio.add_source(id, object_id);
 
         self.clients_on_txd
@@ -376,6 +409,8 @@ impl Manager {
     }
 
     pub fn close_browser(&mut self, id: u32, force_close: bool) {
+        self.pending_object_ids.remove(&id);
+
         if let Some(client) = self.clients.remove(&id) {
             self.internal_close(client, force_close);
         }
@@ -533,6 +568,7 @@ impl Manager {
 
     pub fn close_all_browsers(&mut self) {
         self.clients_on_txd.clear();
+        self.pending_object_ids.clear();
         let audio = self.audio.clone();
 
         self.clients
@@ -551,10 +587,13 @@ impl Manager {
         }
 
         log::trace!("PRE cef::initalize()");
-        crate::browser::cef::initialize(self.event_tx.clone());
+        let initialized = crate::browser::cef::initialize(self.event_tx.clone());
         log::trace!("POST cef::initalize()");
 
-        self.cef_running = true;
+        self.cef_running = initialized;
+        if !initialized {
+            log::error!("CEF initialization failed or another process owns root_cache_path");
+        }
     }
 
     pub fn shutdown_cef(&mut self) {
@@ -565,7 +604,8 @@ impl Manager {
         }
 
         log::trace!("PRE cef::shutdown()");
-        cef::shutdown();
+        crate::browser::cef::shutdown();
+        self.cef_running = false;
         log::trace!("POST cef::shutdown()");
     }
 

@@ -619,6 +619,7 @@ fn win_event(msg: UINT, wparam: WPARAM, lparam: LPARAM) -> bool {
 
                 let mut event: cef_key_event_t = unsafe { std::mem::zeroed() };
 
+                event.size = std::mem::size_of::<cef_key_event_t>();
                 event.windows_key_code = wparam as i32;
                 event.native_key_code = lparam as i32;
                 event.modifiers = crate::utils::cef_keyboard_modifiers(wparam, lparam);
@@ -631,9 +632,24 @@ fn win_event(msg: UINT, wparam: WPARAM, lparam: LPARAM) -> bool {
                 } else if msg == WM_CHAR || msg == WM_SYSCHAR {
                     event.type_ = cef_key_event_type_t::KEYEVENT_CHAR;
 
-                    let bytes = [wparam as u8];
-                    if let Some(ch) = encoding_rs::WINDOWS_1251.decode(&bytes).0.chars().next() {
-                        event.windows_key_code = ch as _;
+                    // GTA:SA creates an ANSI window, so WM_CHAR values in the byte range use the
+                    // active Windows-1251 code page. Preserve that behavior while also accepting
+                    // UTF-16 values produced by Unicode input methods.
+                    let character = if wparam <= u8::MAX as usize {
+                        let bytes = [wparam as u8];
+                        encoding_rs::WINDOWS_1251
+                            .decode(&bytes)
+                            .0
+                            .encode_utf16()
+                            .next()
+                    } else {
+                        u16::try_from(wparam).ok()
+                    };
+
+                    if let Some(character) = character {
+                        event.windows_key_code = character as i32;
+                        event.character = character;
+                        event.unmodified_character = character;
                     }
                 }
 

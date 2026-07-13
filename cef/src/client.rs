@@ -2,6 +2,7 @@ use crate::handlers::audio::AudioHandler;
 use crate::handlers::context_menu::ContextMenuHandler;
 use crate::handlers::lifespan::LifespanHandler;
 use crate::handlers::load::LoadHandler;
+use crate::handlers::permission::PermissionHandler;
 use crate::handlers::render::RenderHandler;
 
 use crate::ProcessId;
@@ -14,6 +15,7 @@ pub trait Client {
     type ContextMenuHandler: ContextMenuHandler;
     type LoadHandler: LoadHandler;
     type AudioHandler: AudioHandler;
+    type PermissionHandler: PermissionHandler;
 
     fn lifespan_handler(&self) -> Option<Self::LifespanHandler> {
         None
@@ -32,6 +34,10 @@ pub trait Client {
     }
 
     fn audio_handler(&self) -> Option<Self::AudioHandler> {
+        None
+    }
+
+    fn permission_handler(&self) -> Option<Self::PermissionHandler> {
         None
     }
 

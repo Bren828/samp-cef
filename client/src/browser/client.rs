@@ -16,6 +16,7 @@ use cef::handlers::audio::AudioHandler;
 use cef::handlers::context_menu::ContextMenuHandler;
 use cef::handlers::lifespan::LifespanHandler;
 use cef::handlers::load::LoadHandler;
+use cef::handlers::permission::{PermissionHandler, PermissionRequestResult};
 use cef::handlers::render::{DirtyRects, PaintElement, RenderHandler};
 use cef::process_message::ProcessMessage;
 use cef::types::list::ValueType;
@@ -113,10 +114,11 @@ impl LifespanHandler for WebClientRef {
         log::trace!("LifespanHandler::on_before_close");
 
         let mut browser = self.0.browser.lock();
-
-        if let Some(browser) = browser.take() {
-            browser.host().close_dev_tools();
-        }
+        // CEF owns the final browser teardown at this point. Calling back into
+        // BrowserHost here (close_dev_tools in the old implementation) can
+        // re-enter destruction and crashes CEF 150 during application shutdown.
+        // Releasing our retained browser reference is the only required action.
+        browser.take();
     }
 }
 
@@ -126,6 +128,7 @@ impl Client for WebClientRef {
     type ContextMenuHandler = Self;
     type LoadHandler = Self;
     type AudioHandler = Self;
+    type PermissionHandler = Self;
 
     fn lifespan_handler(&self) -> Option<Self> {
         Some(self.clone())
@@ -149,6 +152,10 @@ impl Client for WebClientRef {
         } else {
             None
         }
+    }
+
+    fn permission_handler(&self) -> Option<Self> {
+        Some(self.clone())
     }
 
     fn on_process_message(
@@ -239,6 +246,28 @@ impl Client for WebClientRef {
         }
 
         false
+    }
+}
+
+impl PermissionHandler for WebClientRef {
+    fn on_show_permission_prompt(
+        &self, _browser: Browser, _prompt_id: u64, requesting_origin: String,
+        requested_permissions: u32,
+    ) -> Option<PermissionRequestResult> {
+        const LOCAL_NETWORK_PERMISSIONS: u32 =
+            (cef_sys::cef_permission_request_types_t::CEF_PERMISSION_TYPE_LOCAL_NETWORK_ACCESS_DEPRECATED
+                | cef_sys::cef_permission_request_types_t::CEF_PERMISSION_TYPE_LOCAL_NETWORK
+                | cef_sys::cef_permission_request_types_t::CEF_PERMISSION_TYPE_LOOPBACK_NETWORK)
+                as u32;
+
+        if requesting_origin.trim_end_matches('/') == "sampcef://assets"
+            && requested_permissions != 0
+            && requested_permissions & !LOCAL_NETWORK_PERMISSIONS == 0
+        {
+            Some(PermissionRequestResult::Accept)
+        } else {
+            None
+        }
     }
 }
 
@@ -677,13 +706,14 @@ impl WebClient {
 
                 let mut window_info = unsafe { std::mem::zeroed::<cef_sys::cef_window_info_t>() };
 
+                window_info.size = std::mem::size_of::<cef_sys::cef_window_info_t>();
                 window_info.style =
                     WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE;
                 window_info.parent_window = std::ptr::null_mut();
-                window_info.x = CW_USEDEFAULT;
-                window_info.y = CW_USEDEFAULT;
-                window_info.width = CW_USEDEFAULT;
-                window_info.height = CW_USEDEFAULT;
+                window_info.bounds.x = CW_USEDEFAULT;
+                window_info.bounds.y = CW_USEDEFAULT;
+                window_info.bounds.width = CW_USEDEFAULT;
+                window_info.bounds.height = CW_USEDEFAULT;
                 window_info.window_name = window_name.to_cef_string();
                 window_info.windowless_rendering_enabled = 0;
 

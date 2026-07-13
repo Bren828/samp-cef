@@ -3,9 +3,10 @@ use crate::browser::Browser;
 use crate::handlers::render::{DirtyRects, PaintElement, RenderHandler};
 
 use cef_sys::{
-    HCURSOR, cef_accessibility_handler_t, cef_browser_t, cef_cursor_info_t, cef_cursor_type_t,
-    cef_drag_data_t, cef_drag_operations_mask_t, cef_paint_element_type_t, cef_range_t, cef_rect_t,
-    cef_render_handler_t, cef_screen_info_t, cef_string_t, cef_text_input_mode_t,
+    HCURSOR, cef_accelerated_paint_info_t, cef_accessibility_handler_t, cef_browser_t,
+    cef_cursor_info_t, cef_cursor_type_t, cef_drag_data_t, cef_drag_operations_mask_t,
+    cef_paint_element_type_t, cef_range_t, cef_rect_t, cef_render_handler_t, cef_screen_info_t,
+    cef_string_t, cef_text_input_mode_t,
 };
 
 unsafe extern "system" fn get_accessibility_handler(
@@ -119,7 +120,7 @@ unsafe extern "system" fn on_paint<I: RenderHandler>(
 unsafe extern "system" fn on_accelerated_paint(
     _this: *mut cef_render_handler_t, _browser: *mut cef_browser_t,
     _type_: cef_paint_element_type_t::Type, _dirty_rects_count: usize,
-    _dirty_rects: *const cef_rect_t, _shared_handle: *mut ::std::os::raw::c_void,
+    _dirty_rects: *const cef_rect_t, _info: *const cef_accelerated_paint_info_t,
 ) {
     println!("accelerated");
 }
@@ -133,7 +134,7 @@ unsafe extern "system" fn on_cursor_change(
 
 unsafe extern "system" fn start_dragging(
     _this: *mut cef_render_handler_t, _browser: *mut cef_browser_t,
-    _drag_data: *mut cef_drag_data_t, _allowed_ops: cef_drag_operations_mask_t,
+    _drag_data: *mut cef_drag_data_t, _allowed_ops: cef_drag_operations_mask_t::Type,
     _x: ::std::os::raw::c_int, _y: ::std::os::raw::c_int,
 ) -> ::std::os::raw::c_int {
     0
@@ -141,7 +142,7 @@ unsafe extern "system" fn start_dragging(
 
 unsafe extern "system" fn update_drag_cursor<I: RenderHandler>(
     this: *mut cef_render_handler_t, _browser: *mut cef_browser_t,
-    operation: cef_drag_operations_mask_t,
+    operation: cef_drag_operations_mask_t::Type,
 ) {
     let _obj: &mut Wrapper<_, I> = Wrapper::unwrap(this);
     let _ = operation;

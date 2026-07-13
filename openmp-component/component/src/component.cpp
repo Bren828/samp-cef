@@ -618,6 +618,18 @@ private:
 		return true;
 	}
 
+	bool getAmxCell(IPawnScript& script, cell address, cell& output) const
+	{
+		cell* physicalAddress = nullptr;
+		if (script.GetAddr(address, &physicalAddress) != AMX_ERR_NONE || physicalAddress == nullptr)
+		{
+			return false;
+		}
+
+		output = *physicalAddress;
+		return true;
+	}
+
 	bool requireParams(const cell* params, int count, const char* native) const
 	{
 		if (pawnParamCount(params) >= count)
@@ -1405,25 +1417,47 @@ private:
 		const int count = pawnParamCount(params);
 		if ((count - 2) % 2 != 0)
 		{
+			if (self->core_)
+			{
+				self->core_->logLn(LogLevel::Error, "[CEF] cef_emit_event has an incomplete argument pair");
+			}
 			return 0;
 		}
 
 		IPawnScript* script = self->scriptFromAmx(amx);
 		if (!script)
 		{
+			if (self->core_)
+			{
+				self->core_->logLn(LogLevel::Error, "[CEF] cef_emit_event could not resolve the Pawn script");
+			}
 			return 0;
 		}
 
 		std::string eventName;
 		if (!self->getAmxString(*script, params[2], eventName))
 		{
+			if (self->core_)
+			{
+				self->core_->logLn(LogLevel::Error, "[CEF] cef_emit_event could not read the event name");
+			}
 			return 0;
 		}
 
 		auto arguments = samp_cef::openmp::new_event_arguments();
 		for (int idx = 3; idx <= count; idx += 2)
 		{
-			const int type = static_cast<int>(params[idx]);
+			cell typeValue = 0;
+			if (!self->getAmxCell(*script, params[idx], typeValue))
+			{
+				if (self->core_)
+				{
+					self->core_->logLn(LogLevel::Error, "[CEF] cef_emit_event could not read argument type at index %d", idx);
+				}
+				return 0;
+			}
+
+			const int type = static_cast<int>(typeValue);
 			const cell value = params[idx + 1];
 
 			switch (type)
@@ -1433,6 +1467,10 @@ private:
 				std::string stringValue;
 				if (!self->getAmxString(*script, value, stringValue))
 				{
+					if (self->core_)
+					{
+						self->core_->logLn(LogLevel::Error, "[CEF] cef_emit_event could not read string argument at index %d", idx);
+					}
 					return 0;
 				}
 				arguments->push_string(asRustStr(stringValue));
@@ -1440,14 +1478,32 @@ private:
 			}
 
 			case 1:
-				arguments->push_integer(static_cast<int>(value));
+			{
+				cell integerValue = 0;
+				if (!self->getAmxCell(*script, value, integerValue))
+				{
+					return 0;
+				}
+				arguments->push_integer(static_cast<int>(integerValue));
 				break;
+			}
 
 			case 2:
-				arguments->push_float(amx_ctof(value));
+			{
+				cell floatValue = 0;
+				if (!self->getAmxCell(*script, value, floatValue))
+				{
+					return 0;
+				}
+				arguments->push_float(amx_ctof(floatValue));
 				break;
+			}
 
 			default:
+				if (self->core_)
+				{
+					self->core_->logLn(LogLevel::Error, "[CEF] cef_emit_event has invalid argument type %d at index %d", type, idx);
+				}
 				return 0;
 			}
 		}

@@ -18,4 +18,6 @@ GitHub Actions builds the open.mp component next to the SA:MP server plugin.
 - Optionally set `DX_SDK` to an existing DirectX SDK `Lib/x86` directory; otherwise the script downloads and extracts it.
 - Run `scripts/build-client-win32.sh`.
 
-The script downloads `libcef.lib` if `CEF_PATH` is not set and builds `client`, `renderer`, and `loader` for `i686-pc-windows-msvc`. Outputs land in `target/i686-pc-windows-msvc/release/`.
+The script downloads and verifies the exact distribution from `cef-distribution.json` if `CEF_PATH` is not set, then builds `client`, `renderer`, and `loader` for `i686-pc-windows-msvc`. `CEF_PATH` points to the distribution root containing `Release/libcef.lib`. Outputs land in `target/i686-pc-windows-msvc/release/`.
+
+After building, run `node scripts/package-client.mjs`. It creates `redist/cef.asi` and a complete `redist/cef/` runtime from the pinned CEF distribution, excluding build-only import libraries and bootstrap executables. `redist/package-manifest.json` records SHA-256 hashes for the package contents.

@@ -1,15 +1,15 @@
 use crate::handlers::v8handler::V8Handler;
 use crate::ref_counted::RefGuard;
 use crate::types::string::CefString;
-use cef_sys::{cef_v8context_t, cef_v8value_t};
+use cef_sys::{cef_v8_context_t, cef_v8_value_t};
 
 #[derive(Clone)]
 pub struct V8Context {
-    inner: RefGuard<cef_v8context_t>,
+    inner: RefGuard<cef_v8_context_t>,
 }
 
 impl V8Context {
-    pub(crate) fn from_raw(raw: *mut cef_v8context_t) -> V8Context {
+    pub(crate) fn from_raw(raw: *mut cef_v8_context_t) -> V8Context {
         if raw.is_null() {
             panic!("V8Context::from_raw null pointer");
         }
@@ -19,7 +19,7 @@ impl V8Context {
         }
     }
 
-    pub(crate) fn from_raw_borrowed(raw: *mut cef_v8context_t) -> V8Context {
+    pub(crate) fn from_raw_borrowed(raw: *mut cef_v8_context_t) -> V8Context {
         if raw.is_null() {
             panic!("V8Context::from_raw_borrowed null pointer");
         }
@@ -28,7 +28,7 @@ impl V8Context {
             inner: RefGuard::from_raw_borrowed(raw),
         }
     }
-    pub(crate) fn from_raw_add_ref(raw: *mut cef_v8context_t) -> V8Context {
+    pub(crate) fn from_raw_add_ref(raw: *mut cef_v8_context_t) -> V8Context {
         if raw.is_null() {
             panic!("V8Context::from_raw_add_ref null pointer");
         }
@@ -79,7 +79,7 @@ impl V8Context {
     }
 
     pub fn current_context() -> V8Context {
-        let ptr = unsafe { cef_sys::cef_v8context_get_current_context() };
+        let ptr = unsafe { cef_sys::cef_v8_context_get_current_context() };
 
         // V8Context::from_raw_add_ref(ptr)
         V8Context::from_raw(ptr)
@@ -88,11 +88,11 @@ impl V8Context {
 
 #[derive(Clone)]
 pub struct V8Value {
-    inner: RefGuard<cef_v8value_t>,
+    inner: RefGuard<cef_v8_value_t>,
 }
 
 impl V8Value {
-    pub(crate) fn from_raw(raw: *mut cef_v8value_t) -> V8Value {
+    pub(crate) fn from_raw(raw: *mut cef_v8_value_t) -> V8Value {
         if raw.is_null() {
             panic!("V8Value::from_raw null pointer");
         }
@@ -102,7 +102,7 @@ impl V8Value {
         }
     }
 
-    pub(crate) fn from_raw_borrowed(raw: *mut cef_v8value_t) -> V8Value {
+    pub(crate) fn from_raw_borrowed(raw: *mut cef_v8_value_t) -> V8Value {
         if raw.is_null() {
             panic!("V8Value::from_raw_borrowed null pointer");
         }
@@ -112,7 +112,7 @@ impl V8Value {
         }
     }
 
-    pub(crate) fn from_raw_add_ref(raw: *mut cef_v8value_t) -> V8Value {
+    pub(crate) fn from_raw_add_ref(raw: *mut cef_v8_value_t) -> V8Value {
         if raw.is_null() {
             panic!("V8Value::from_raw_add_ref null pointer");
         }
@@ -123,7 +123,7 @@ impl V8Value {
     }
 
     pub fn new_undefined() -> V8Value {
-        let raw = unsafe { cef_sys::cef_v8value_create_undefined() };
+        let raw = unsafe { cef_sys::cef_v8_value_create_undefined() };
         V8Value::from_raw(raw)
     }
 
@@ -133,25 +133,25 @@ impl V8Value {
             .map(|handler| crate::rust_to_c::v8handler::wrap(handler))
             .unwrap_or(std::ptr::null_mut());
 
-        let func = unsafe { cef_sys::cef_v8value_create_function(name.as_cef_string(), handler) };
+        let func = unsafe { cef_sys::cef_v8_value_create_function(name.as_cef_string(), handler) };
 
         V8Value::from_raw(func)
     }
 
     pub fn new_bool(value: bool) -> V8Value {
-        let raw = unsafe { cef_sys::cef_v8value_create_bool(if value { 1 } else { 0 }) };
+        let raw = unsafe { cef_sys::cef_v8_value_create_bool(if value { 1 } else { 0 }) };
 
         V8Value::from_raw(raw)
     }
 
     pub fn new_integer(value: i32) -> V8Value {
-        let raw = unsafe { cef_sys::cef_v8value_create_int(value) };
+        let raw = unsafe { cef_sys::cef_v8_value_create_int(value) };
 
         V8Value::from_raw(raw)
     }
 
     pub fn new_double(value: f64) -> V8Value {
-        let raw = unsafe { cef_sys::cef_v8value_create_double(value) };
+        let raw = unsafe { cef_sys::cef_v8_value_create_double(value) };
 
         V8Value::from_raw(raw)
     }
@@ -159,27 +159,27 @@ impl V8Value {
     pub fn new_string(string: &str) -> V8Value {
         let cef_string = CefString::new(string);
 
-        let raw = unsafe { cef_sys::cef_v8value_create_string(cef_string.as_cef_string()) };
+        let raw = unsafe { cef_sys::cef_v8_value_create_string(cef_string.as_cef_string()) };
 
         V8Value::from_raw(raw)
     }
 
     pub fn new_cefstring(string: &CefString) -> V8Value {
-        let raw = unsafe { cef_sys::cef_v8value_create_string(string.as_cef_string()) };
+        let raw = unsafe { cef_sys::cef_v8_value_create_string(string.as_cef_string()) };
 
         V8Value::from_raw(raw)
     }
 
     pub fn new_object() -> V8Value {
         let raw = unsafe {
-            cef_sys::cef_v8value_create_object(std::ptr::null_mut(), std::ptr::null_mut())
+            cef_sys::cef_v8_value_create_object(std::ptr::null_mut(), std::ptr::null_mut())
         };
 
         V8Value::from_raw(raw)
     }
 
     pub fn new_array(length: usize) -> V8Value {
-        let raw = unsafe { cef_sys::cef_v8value_create_array(length as _) };
+        let raw = unsafe { cef_sys::cef_v8_value_create_array(length as _) };
 
         V8Value::from_raw(raw)
     }
@@ -291,7 +291,7 @@ impl V8Value {
             .map(|this| this.inner.into_cef())
             .unwrap_or(std::ptr::null_mut());
 
-        let args: Vec<*mut cef_v8value_t> = arguments
+        let args: Vec<*mut cef_v8_value_t> = arguments
             .iter()
             .map(|v| v.clone().inner.into_cef())
             .collect();
@@ -313,7 +313,7 @@ impl V8Value {
             .map(|this| this.inner.into_cef())
             .unwrap_or(std::ptr::null_mut());
 
-        let args: Vec<*mut cef_v8value_t> = arguments
+        let args: Vec<*mut cef_v8_value_t> = arguments
             .iter()
             .map(|v| v.clone().inner.into_cef())
             .collect();

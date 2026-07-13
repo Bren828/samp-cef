@@ -3,9 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="i686-pc-windows-msvc"
-CEF_LIB_DIR="${CEF_PATH:-$ROOT_DIR/third_party/cef}"
-CEF_LIB_PATH="${CEF_LIB_DIR}/libcef.lib"
-CEF_LIB_URL="https://github.com/ZOTTCE/samp-cef/releases/download/v1.1-beta/libcef.lib"
+CEF_ROOT="${CEF_PATH:-$ROOT_DIR/third_party/cef}"
+CEF_LIB_PATH="${CEF_ROOT}/Release/libcef.lib"
 DX_SDK_LIB="${DX_SDK:-}"
 DX_SDK_URL="https://download.microsoft.com/download/a/e/7/ae743f1f-632b-4809-87a9-aa1bb3458e31/DXSDK_Jun10.exe"
 DX_SDK_DIR="${DX_SDK_DIR:-$ROOT_DIR/third_party/dxsdk}"
@@ -27,7 +26,7 @@ if ! cargo xwin --version >/dev/null 2>&1; then
 fi
 
 if ! command -v curl >/dev/null 2>&1; then
-  echo "curl is required to download libcef.lib." >&2
+  echo "curl is required to download the DirectX SDK." >&2
   exit 1
 fi
 
@@ -78,12 +77,14 @@ elif [ ! -d "$DX_SDK_LIB" ]; then
 fi
 
 if [ ! -f "$CEF_LIB_PATH" ]; then
-  mkdir -p "$CEF_LIB_DIR"
-  echo "Downloading libcef.lib to $CEF_LIB_PATH"
-  curl -L "$CEF_LIB_URL" -o "$CEF_LIB_PATH"
+  if ! command -v node >/dev/null 2>&1; then
+    echo "Node.js is required to download and verify the CEF distribution." >&2
+    exit 1
+  fi
+  node "$ROOT_DIR/scripts/download-cef.mjs" --output "$CEF_ROOT"
 fi
 
-export CEF_PATH="$CEF_LIB_DIR"
+export CEF_PATH="$CEF_ROOT"
 export XWIN_ACCEPT_LICENSE="${XWIN_ACCEPT_LICENSE:-1}"
 export LIB="${DX_SDK_LIB}${LIB:+;$LIB}"
 # export CFLAGS_i686_pc_windows_msvc="${CFLAGS_i686_pc_windows_msvc:-} /FIstring.h /DHAVE_STRING_H=1"

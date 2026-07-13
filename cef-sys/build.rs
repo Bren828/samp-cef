@@ -9,8 +9,8 @@ fn main() {
     }
 
     let cef_redist = std::env::var("CEF_PATH")
-        .expect("No CEF_PATH env variable. It should point to the libcef.lib.");
+        .expect("No CEF_PATH environment variable. It should point to the CEF distribution root.");
 
-    println!("cargo:rustc-link-search=native={}", cef_redist);
+    println!("cargo:rustc-link-search=native={}/Release", cef_redist);
     println!("cargo:rustc-link-lib=static=libcef");
 }

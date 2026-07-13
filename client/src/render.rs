@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
@@ -11,6 +12,7 @@ use client_api::gta::entity::CEntity;
 use client_api::gta::menu_manager::CMenuManager;
 use client_api::gta::rw::{self, rpworld::*, rwplcore::*};
 use client_api::samp::objects::Object;
+use client_api::samp::version::{Version, version};
 
 use retour::GenericDetour;
 
@@ -23,6 +25,7 @@ const SHUTDOWN_RW_EVENT: usize = 0x53BB80;
 
 type DrawingEventFn = extern "C" fn();
 type ShutdownRwEventFn = extern "C" fn();
+type EntityRenderFn = extern "thiscall" fn(obj: *mut CEntity);
 
 struct FrameCounter {
     start_at: Instant,
@@ -32,10 +35,12 @@ struct FrameCounter {
 
 struct Render {
     manager: Arc<Mutex<Manager>>,
-    centity_render: GenericDetour<extern "thiscall" fn(obj: *mut CEntity)>,
+    centity_render: GenericDetour<EntityRenderFn>,
+    atomic_hooks: HashMap<usize, AtomicHook>,
     drawing_event: GenericDetour<DrawingEventFn>,
     shutdown_event: GenericDetour<ShutdownRwEventFn>,
     counter: FrameCounter,
+    last_atomic_probe: Instant,
 }
 
 impl Render {
@@ -102,9 +107,11 @@ pub fn initialize(manager: Arc<Mutex<Manager>>) {
     let render = Render {
         manager,
         centity_render,
+        atomic_hooks: HashMap::new(),
         drawing_event,
         shutdown_event,
         counter,
+        last_atomic_probe: Instant::now(),
     };
 
     unsafe {
@@ -156,9 +163,80 @@ struct RenderState {
 extern "C" fn drawing_event() {
     if let Some(render) = Render::get() {
         render.drawing_event.call();
+
+        if render.last_atomic_probe.elapsed() >= Duration::from_millis(250) {
+            ensure_r3_atomic_hooks(render);
+            render.last_atomic_probe = Instant::now();
+        }
     }
 
     on_render();
+}
+
+#[derive(Clone, Copy)]
+struct AtomicHook {
+    object_id: i32,
+    original: RpAtomicCallBackRender,
+}
+
+fn ensure_r3_atomic_hooks(render: &mut Render) {
+    if version() != Version::V037R3 {
+        return;
+    }
+
+    let mut pending = Vec::new();
+
+    {
+        let mut manager = render.manager.lock();
+
+        for browser in manager.external_browsers() {
+            for &object_id in &browser.object_ids {
+                if let Some(object) = Object::get(object_id) {
+                    for atomic in object.render_atomics() {
+                        pending.push((browser.browser.id(), object_id, atomic));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut installed = false;
+
+    for (browser_id, object_id, atomic) in pending {
+        unsafe {
+            let current = (*atomic).renderCallBack;
+
+            if current.map(|callback| callback as usize)
+                == Some(atomic_render as *const () as usize)
+            {
+                continue;
+            }
+
+            render.atomic_hooks.insert(
+                atomic as usize,
+                AtomicHook {
+                    object_id,
+                    original: current,
+                },
+            );
+            (*atomic).renderCallBack = Some(atomic_render);
+            installed = true;
+
+            log::trace!(
+                "Hooked R3 atomic render path: browser={}, object={}, atomic={:p}",
+                browser_id,
+                object_id,
+                atomic
+            );
+        }
+    }
+
+    if installed
+        && render.centity_render.is_enabled()
+        && let Err(error) = unsafe { render.centity_render.disable() }
+    {
+        log::warn!("Unable to disable fallback CEntity::Render hook: {error}");
+    }
 }
 
 extern "C" fn shutdown_event() {
@@ -170,6 +248,10 @@ extern "C" fn shutdown_event() {
 }
 
 extern "thiscall" fn centity_render(obj: *mut CEntity) {
+    render_entity(obj);
+}
+
+fn render_entity(obj: *mut CEntity) {
     if let Some(render) = Render::get() {
         let mut manager = render.manager.lock();
         let _entity = unsafe { &mut *obj };
@@ -213,6 +295,56 @@ extern "thiscall" fn centity_render(obj: *mut CEntity) {
         }
 
         render.centity_render.call(obj);
+    }
+}
+
+extern "C" fn atomic_render(atomic: *mut RpAtomic) -> *mut RpAtomic {
+    let Some(render) = Render::get() else {
+        return atomic;
+    };
+    let Some(hook) = render.atomic_hooks.get(&(atomic as usize)).copied() else {
+        return atomic;
+    };
+
+    let mut manager = render.manager.lock();
+    let browser = manager
+        .external_browsers()
+        .iter_mut()
+        .find(|browser| browser.object_ids.contains(&hook.object_id));
+
+    let Some(browser) = browser else {
+        drop(manager);
+
+        unsafe {
+            if !atomic.is_null() {
+                (*atomic).renderCallBack = hook.original;
+            }
+        }
+        render.atomic_hooks.remove(&(atomic as usize));
+
+        return unsafe {
+            hook.original
+                .map(|callback| callback(atomic))
+                .unwrap_or(atomic)
+        };
+    };
+
+    unsafe {
+        if atomic.is_null() || (*atomic).geometry.is_null() {
+            return hook
+                .original
+                .map(|callback| callback(atomic))
+                .unwrap_or(atomic);
+        }
+
+        let materials = (*(*atomic).geometry).matList.as_mut_slice();
+        before_entity_render(materials, browser);
+        let result = hook
+            .original
+            .map(|callback| callback(atomic))
+            .unwrap_or(atomic);
+        after_entity_render(materials, browser);
+        result
     }
 }
 
@@ -272,6 +404,15 @@ unsafe fn before_entity_render(materials: &mut [*mut RpMaterial], client: &mut E
                 let raster = &mut *(*texture).raster;
                 let width = (raster.width * client.scale) as usize;
                 let height = (raster.height * client.scale) as usize;
+
+                log::trace!(
+                    "Object browser {} matched texture {:?}: {}x{} at scale {}",
+                    client.browser.id(),
+                    client.texture,
+                    raster.width,
+                    raster.height,
+                    client.scale
+                );
 
                 view.make_active();
 

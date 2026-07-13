@@ -1,6 +1,8 @@
 use crate::types::string::CefString;
 
-pub fn register_custom_scheme(
+/// # Safety
+/// `registrar` must be the valid registrar supplied to `on_register_custom_schemes`.
+pub unsafe fn register_custom_scheme(
     registrar: *mut cef_sys::cef_scheme_registrar_t, scheme_name: &str, options: i32,
 ) -> bool {
     if registrar.is_null() {

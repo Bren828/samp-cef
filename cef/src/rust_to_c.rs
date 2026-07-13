@@ -10,6 +10,7 @@ pub mod client;
 pub mod context_menu_handler;
 pub mod lifespan_handler;
 pub mod load_handler;
+pub mod permission_handler;
 pub mod render_handler;
 pub mod render_process_handler;
 pub mod task;
@@ -104,6 +105,7 @@ mod tests {
     use crate::handlers::context_menu::ContextMenuHandler;
     use crate::handlers::lifespan::LifespanHandler;
     use crate::handlers::load::LoadHandler;
+    use crate::handlers::permission::PermissionHandler;
     use crate::handlers::render::{DirtyRects, PaintElement, RenderHandler};
     use crate::handlers::render_process::RenderProcessHandler;
     use crate::handlers::v8handler::V8Handler;
@@ -112,8 +114,9 @@ mod tests {
     use crate::v8::V8Value;
     use cef_sys::{
         cef_app_t, cef_audio_handler_t, cef_browser_process_handler_t, cef_client_t,
-        cef_context_menu_handler_t, cef_life_span_handler_t, cef_load_handler_t, cef_rect_t,
-        cef_render_handler_t, cef_render_process_handler_t, cef_task_t, cef_v8handler_t,
+        cef_context_menu_handler_t, cef_life_span_handler_t, cef_load_handler_t,
+        cef_permission_handler_t, cef_rect_t, cef_render_handler_t, cef_render_process_handler_t,
+        cef_task_t, cef_v8_handler_t,
     };
 
     struct DropTracker {
@@ -147,11 +150,11 @@ mod tests {
 
     unsafe fn read_cef_object<T, I>(ptr: *mut T) -> T {
         let wrapper_ptr = ptr as *mut Wrapper<T, I>;
-        std::ptr::read(std::ptr::addr_of!((*wrapper_ptr).cef_object))
+        unsafe { std::ptr::read(std::ptr::addr_of!((*wrapper_ptr).cef_object)) }
     }
 
     unsafe fn drop_wrapper<T, I>(ptr: *mut T) {
-        drop(Box::from_raw(ptr as *mut Wrapper<T, I>));
+        drop(unsafe { Box::from_raw(ptr as *mut Wrapper<T, I>) });
     }
 
     struct DummyRenderProcessHandler;
@@ -206,6 +209,9 @@ mod tests {
     struct DummyAudioHandler;
     impl AudioHandler for DummyAudioHandler {}
 
+    struct DummyPermissionHandler;
+    impl PermissionHandler for DummyPermissionHandler {}
+
     struct DummyClient;
     impl Client for DummyClient {
         type LifespanHandler = DummyLifespanHandler;
@@ -213,6 +219,7 @@ mod tests {
         type ContextMenuHandler = DummyContextMenuHandler;
         type LoadHandler = DummyLoadHandler;
         type AudioHandler = DummyAudioHandler;
+        type PermissionHandler = DummyPermissionHandler;
     }
 
     struct DummyTask;
@@ -290,9 +297,9 @@ mod tests {
     fn wrap_v8handler_sets_callbacks() {
         let ptr = super::v8handler::wrap(DummyV8Handler);
         unsafe {
-            let cef: cef_v8handler_t = read_cef_object::<cef_v8handler_t, DummyV8Handler>(ptr);
+            let cef: cef_v8_handler_t = read_cef_object::<cef_v8_handler_t, DummyV8Handler>(ptr);
             assert!(cef.execute.is_some());
-            drop_wrapper::<cef_v8handler_t, DummyV8Handler>(ptr);
+            drop_wrapper::<cef_v8_handler_t, DummyV8Handler>(ptr);
         }
     }
 
@@ -386,6 +393,18 @@ mod tests {
     }
 
     #[test]
+    fn wrap_permission_handler_sets_callbacks() {
+        let ptr = super::permission_handler::wrap(DummyPermissionHandler);
+        unsafe {
+            let cef: cef_permission_handler_t =
+                read_cef_object::<cef_permission_handler_t, DummyPermissionHandler>(ptr);
+            assert!(cef.on_show_permission_prompt.is_some());
+            assert!(cef.on_dismiss_permission_prompt.is_some());
+            drop_wrapper::<cef_permission_handler_t, DummyPermissionHandler>(ptr);
+        }
+    }
+
+    #[test]
     fn wrap_client_sets_callbacks() {
         let ptr = super::client::wrap(DummyClient);
         unsafe {
@@ -405,6 +424,7 @@ mod tests {
             assert!(cef.get_dialog_handler.is_some());
             assert!(cef.get_context_menu_handler.is_some());
             assert!(cef.get_audio_handler.is_some());
+            assert!(cef.get_permission_handler.is_some());
             drop_wrapper::<cef_client_t, DummyClient>(ptr);
         }
     }

@@ -7,12 +7,12 @@ use crate::process_message::ProcessMessage;
 use crate::v8::V8Context;
 use cef_sys::{
     cef_browser_t, cef_frame_t, cef_process_message_t, cef_render_process_handler_t,
-    cef_v8context_t,
+    cef_v8_context_t,
 };
 
 extern "system" fn on_context_created<I: RenderProcessHandler>(
     this: *mut cef_render_process_handler_t, browser: *mut cef_browser_t, frame: *mut cef_frame_t,
-    context: *mut cef_v8context_t,
+    context: *mut cef_v8_context_t,
 ) {
     let obj: &mut Wrapper<_, I> = Wrapper::unwrap(this);
     let browser = Browser::from_raw_add_ref(browser);
@@ -24,7 +24,7 @@ extern "system" fn on_context_created<I: RenderProcessHandler>(
 
 extern "system" fn on_context_released<I: RenderProcessHandler>(
     this: *mut cef_render_process_handler_t, browser: *mut cef_browser_t, frame: *mut cef_frame_t,
-    context: *mut cef_v8context_t,
+    context: *mut cef_v8_context_t,
 ) {
     let obj: &mut Wrapper<_, I> = Wrapper::unwrap(this);
     let browser = Browser::from_raw_add_ref(browser);

@@ -16,8 +16,39 @@ pub mod v8;
 mod rust_to_c;
 
 use crate::app::App;
+use std::ffi::CStr;
+
+pub const CEF_API_VERSION: i32 = cef_sys::CEF_API_VERSION_15000 as i32;
+
+/// Configure and validate the stable CEF API before calling any other CEF API.
+fn ensure_api_compatible() {
+    let actual_hash = unsafe { cef_sys::cef_api_hash(CEF_API_VERSION, 0) };
+    assert!(
+        !actual_hash.is_null(),
+        "cef_api_hash returned a null pointer"
+    );
+
+    let actual_hash = unsafe { CStr::from_ptr(actual_hash) };
+    let expected_hash = CStr::from_bytes_with_nul(cef_sys::CEF_API_HASH_15000)
+        .expect("CEF_API_HASH_15000 must be NUL-terminated");
+    assert_eq!(
+        actual_hash, expected_hash,
+        "libcef API hash does not match stable CEF API version 15000"
+    );
+
+    let expected_versions = [150, 0, 11, 3544, 150, 0, 7871, 115];
+    for (entry, expected) in expected_versions.into_iter().enumerate() {
+        let actual = unsafe { cef_sys::cef_version_info(entry as i32) };
+        assert_eq!(
+            actual, expected,
+            "unexpected libcef version component {entry}"
+        );
+    }
+}
 
 pub fn execute_process<T: App>(args: &cef_main_args_t, app: Option<T>) -> i32 {
+    ensure_api_compatible();
+
     let app_ptr = app
         .map(|app| self::rust_to_c::app::wrap(app))
         .unwrap_or(std::ptr::null_mut());
@@ -28,6 +59,8 @@ pub fn execute_process<T: App>(args: &cef_main_args_t, app: Option<T>) -> i32 {
 pub fn initialize<T: App>(
     args: Option<&cef_main_args_t>, settings: &cef_settings_t, app: Option<T>,
 ) -> i32 {
+    ensure_api_compatible();
+
     let args = args
         .map(|args| args as *const _)
         .unwrap_or(std::ptr::null());

@@ -3,12 +3,12 @@ use crate::rust_to_c::Wrapper;
 use crate::types::string::CefString;
 use crate::v8::V8Value;
 
-use cef_sys::{cef_string_t, cef_v8handler_t, cef_v8value_t};
+use cef_sys::{cef_string_t, cef_v8_handler_t, cef_v8_value_t};
 
 unsafe extern "system" fn execute<I: V8Handler>(
-    this: *mut cef_v8handler_t, name: *const cef_string_t, object: *mut cef_v8value_t,
-    arguments_count: usize, arguments: *const *mut cef_v8value_t, _retval: *mut *mut cef_v8value_t,
-    _exception: *mut cef_string_t,
+    this: *mut cef_v8_handler_t, name: *const cef_string_t, object: *mut cef_v8_value_t,
+    arguments_count: usize, arguments: *const *mut cef_v8_value_t,
+    _retval: *mut *mut cef_v8_value_t, _exception: *mut cef_string_t,
 ) -> std::os::raw::c_int {
     if name.is_null() || object.is_null() || (arguments_count > 0 && arguments.is_null()) {
         return 0;
@@ -29,8 +29,8 @@ unsafe extern "system" fn execute<I: V8Handler>(
     if ret { 1 } else { 0 }
 }
 
-pub fn wrap<T: V8Handler>(app: T) -> *mut cef_v8handler_t {
-    let mut object: cef_v8handler_t = unsafe { std::mem::zeroed() };
+pub fn wrap<T: V8Handler>(app: T) -> *mut cef_v8_handler_t {
+    let mut object: cef_v8_handler_t = unsafe { std::mem::zeroed() };
 
     object.execute = Some(execute::<T>);
 
