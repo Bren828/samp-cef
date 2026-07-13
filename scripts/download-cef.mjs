@@ -99,6 +99,21 @@ function run(command, args) {
   });
 }
 
+function tarExecutable() {
+  if (process.platform !== "win32") return "tar";
+
+  const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+  if (!windowsRoot) {
+    throw new Error("SystemRoot is not set; cannot locate the Windows tar executable");
+  }
+
+  // Git Bash prepends its GNU tar to PATH. GNU tar treats a native path such
+  // as D:\\a\\... as host:path remote archive syntax and fails with
+  // "Cannot connect to D". Windows bsdtar accepts the native paths passed by
+  // Node, so resolve it explicitly instead of depending on the caller's PATH.
+  return path.join(windowsRoot, "System32", "tar.exe");
+}
+
 async function isInstalledDistribution() {
   const installedManifestPath = path.join(outputDir, ".cef-distribution.json");
   if (!(await exists(installedManifestPath))) return false;
@@ -123,7 +138,7 @@ async function extractDistribution() {
   const temporaryDir = `${outputDir}.extract-${process.pid}`;
   await mkdir(temporaryDir, { recursive: true });
   try {
-    await run("tar", ["-xjf", archivePath, "-C", temporaryDir]);
+    await run(tarExecutable(), ["-xjf", archivePath, "-C", temporaryDir]);
     const extractedRoot = path.join(temporaryDir, manifest.archiveRoot);
     if (!(await exists(path.join(extractedRoot, "Release", "libcef.lib")))) {
       throw new Error("Extracted CEF distribution does not contain Release/libcef.lib");

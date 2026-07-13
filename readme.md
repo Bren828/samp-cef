@@ -1,112 +1,152 @@
-# SAMP CEF
-This project embeds CEF into SA:MP expanding abilities to express yourself with beauty in-game interfaces using HTML / CSS / JavaScript.
+# samp-cef
 
-It is **a FRAMEWORK** (or SDK), not something that you download and use. To be able to create you should have some webdev basics (JS / HTML / CSS).
+`samp-cef` embeds Chromium Embedded Framework into GTA San Andreas Multiplayer and lets a gamemode or a client-side plugin render HTML, CSS, and JavaScript interfaces in-game.
 
-## What you can do
-- Create browser views from a gamemode or from client-side plugins (C ABI).
-- Place browsers on objects (with kind-of spatial sound)
-- Send and receive custom defined events from / to clients.
+This repository is a framework/SDK rather than a standalone mod. Using it requires a server plugin or open.mp component, the client package, and a web interface built for the browser API.
 
-## Crates
-- `cef` - Rust wrappers around CEF C API.
-- `cef-api` - Rust wrappers to build client plugins using CEF.
-- `cef-interface` - example of a Rust plugin.
-- `cef-sys` - bindings for CEF C API.
-- `client` - client CEF plugin.
-- `d3dx9` - bindings to DirectX SDK.
-- `loader` - small loader that makes it work (should be named `cef.asi`).
-- `messages` - protobuf messages to communicate with server on net.
-- `network` - quinn glue (laminar like).
-- `proto` - raw proto files.
-- `renderer` - glue between CEF renderer process and main logic.
-- `server` - server side plugin.
-- `server-core` - shared server logic used by the SA:MP plugin and open.mp component.
-- `openmp-component` - native open.mp component built through CMake and `cxx`.
+## Current status
 
-## Download
-Latest builds from the master branch are placed in [the Actions](https://github.com/ZOTTCE/samp-cef/actions).
+| Area | Supported configuration |
+| --- | --- |
+| Client | Windows x86, Windows 10 or newer |
+| SA:MP client | 0.3.7 R1 and R3; R3-2 is covered by the smoke test |
+| CEF | Official stable `windows32` standard distribution, CEF 150 |
+| Rendering | Software BGRA off-screen rendering; GPU and GPU compositing are currently disabled |
+| Media | WebM VP9 + Opus; proprietary H.264 + AAC codecs are not included |
+| Server | SA:MP plugin and native open.mp component |
 
-Currently there is those OS:
-- CentOS 7 (`cef-centos-7.so`)
-- Debian 9, 10, 11 (`cef-debian-*.so`)
-- Ubuntu 18.04, 20.04 (`cef-ubuntu-*.so`)
-- Windows (`cef-windows.dll`)
+SA:MP 0.3.7 R2 is not currently supported by the client API. Do not mix client binaries from different SA:MP revisions.
 
-And also all client-side parts (`cef.asi`, `client.dll`, `renderer.exe`).
+## Features
 
-## Building
-### Dependencies
-- [Rust compiler (nightly) with `i686-windows-pc-msvc` toolchain](https://rust-lang.org)
-- Prebuilt CEF with proprietary codes (if you wanna use streams). I had one for you in releases. (Client only)
-- Environment variable `CEF_PATH` that points to the CEF distribution root (client only). The import library must be at `Release/libcef.lib`.
-    - In powershell it's like `$env:CEF_PATH="C:/some/path"`
-    - Then build
-- DirectX SDK (June 2010) for client builds; set `DX_SDK` to `DXSDK/Lib/x86`.
+- Create browser views from a gamemode or a client-side plugin through the C ABI.
+- Render a browser on an SA:MP object texture, including spatial audio settings.
+- Exchange typed events between Pawn, the browser process, and client plugins.
+- Load HTTP/HTTPS pages or sandboxed local assets from `<GTA>/cef/assets`.
+- Forward mouse and keyboard input, resize events, DevTools requests, and browser audio.
+- Run the server side as either a legacy SA:MP plugin or an open.mp component.
 
-### Notes ...
-If you get a linker error, you should change hard-coded links in the source code
+## Installing the client package
 
-- `client/build.rs` - path to DirectX SDK (default one)
+Download the `cef.zip` artifact from [GitHub Actions](https://github.com/zottce/samp-cef/actions), or build and package it using the instructions below. Extract it into the GTA San Andreas directory:
 
-### Running Rust
-and now
-
-```sh
-rustup toolchain install nightly-2022-11-06-i686-pc-windows-msvc
-cargo build --release
+```text
+gta_sa.exe
+cef.asi
+cef/
+  client.dll
+  renderer.exe
+  libcef.dll
+  chrome_elf.dll
+  locales/
+  resources.pak
+  ...
 ```
 
-### Building the open.mp component
-Use the helper script from the repository root:
+Keep the complete `cef/` directory from the package. CEF 150 requires more runtime files than the old CEF 89 client, so copying only `libcef.dll`, `client.dll`, and `renderer.exe` is not sufficient.
+
+Local pages belong in `<GTA>/cef/assets/`. Browser cache, cookies, logs, and per-instance data are stored under `<GTA>/cef/user_data/`.
+
+Launch multiplayer through `samp.exe`; starting `gta_sa.exe` directly launches single-player GTA.
+
+## Building the Windows x86 client
+
+Requirements:
+
+- stable Rust with the `i686-pc-windows-msvc` target;
+- Visual Studio 2022 Build Tools with the C++ toolchain;
+- Node.js 20 or newer;
+- `tar` with bzip2 support (included with current Windows versions).
+
+From PowerShell:
+
+```powershell
+rustup target add i686-pc-windows-msvc
+
+node scripts/download-cef.mjs --output third_party/cef
+$env:CEF_PATH = (Resolve-Path third_party/cef).Path
+
+cargo build --release --target i686-pc-windows-msvc `
+  -p client -p renderer -p loader
+
+node scripts/package-client.mjs --cef $env:CEF_PATH --output redist
+```
+
+The package is written to `redist/`:
+
+- `redist/cef.asi` is the loader;
+- `redist/cef/` is the complete client runtime;
+- `redist/package-manifest.json` contains SHA-256 hashes for every runtime payload file.
+
+`CEF_PATH` must point to the root of the extracted official distribution. Its import library must be at `Release/libcef.lib`.
+
+See [docs/build.md](docs/build.md) for tests, cross-compilation, bindings generation, and server builds.
+
+## Pinned CEF distribution
+
+The exact distribution is defined in [cef-distribution.json](cef-distribution.json). Build and CI scripts never resolve a floating `latest` archive.
+
+- CEF: `150.0.11+gb887805+chromium-150.0.7871.115`
+- Chromium: `150.0.7871.115`
+- Release branch: `7871`
+- Stable CEF API version: `15000`
+- Platform: `windows32`
+- Distribution: official `standard` archive
+- SHA-256: `03b6b34328ef943d04bbd06479b097de4046e89439ae2d6122d0e95e517a7909`
+
+This archive intentionally uses the official codec set. H.264 and AAC are expected to be unavailable; proprietary codecs are outside the current migration scope.
+
+## Smoke testing
+
+The fixture in [examples/cef150-smoke](examples/cef150-smoke/README.md) verifies the behavior expected from the previous client plugin:
+
+- local HTML with the correct MIME type;
+- HTTP fetch and browser/renderer JS IPC;
+- keyboard, mouse, resize, and software OSR updates;
+- object texture replacement on SA:MP R3;
+- WebM VP9 + Opus playback;
+- expected rejection of H.264 + AAC.
+
+## Workspace crates
+
+- `cef-sys` — generated Windows x86 CEF C API bindings.
+- `cef` — safe and ref-counted Rust wrappers around the CEF C API.
+- `client` — the injected SA:MP client plugin.
+- `renderer` — the CEF renderer subprocess.
+- `loader` — the ASI loader, packaged as `cef.asi`.
+- `cef-api` — API used by third-party client plugins.
+- `cef-interface` — example client-side interface plugin.
+- `messages`, `network` — protocol messages and transport.
+- `server`, `server-core` — legacy SA:MP server plugin implementation.
+- `openmp-component` — native open.mp component.
+
+## Server builds
+
+Build only the server target appropriate for the host. Building the entire workspace on Linux also selects Windows-only crates.
+
+```sh
+cargo build --release --package server --target i686-unknown-linux-gnu
+```
+
+For open.mp, use:
 
 ```sh
 scripts/build-openmp-component.sh --openmp-root /path/to/open.mp
 scripts/build-openmp-component.sh --openmp-root /path/to/open.mp --server-root /path/to/omp-server
 ```
 
-It builds `openmp-component` and installs it into `<server>/components` when `--server-root` is provided. More details are in [docs/build.md](docs/build.md) and [openmp-component/README.md](openmp-component/README.md).
+More details are in [openmp-component/README.md](openmp-component/README.md).
 
-### Cross-compiling the Windows client (macOS/Linux)
-Use `scripts/build-client-win32.sh` to build `client`, `renderer`, and `loader` for `i686-pc-windows-msvc` on non-Windows hosts. It relies on `cargo-xwin` (`cargo install cargo-xwin --locked`), Node.js, and `7z` for extracting the DirectX SDK. If `CEF_PATH` is not set, the script downloads and verifies the exact CEF distribution from `cef-distribution.json`. The script can also download/extract the DirectX SDK if `DX_SDK` is not set.
+## API documentation
 
-also the client plugin can be built using OpenAL for sound ([rodio](https://crates.io/crates/rodio) by default). to do that compile the client without default features. for example:
-```
-cargo +nightly-i686 build --release --package client --no-default-features
-```
-to make it work you should place `openal.dll` as `sound.dll` in the `cef` folder. I do not remember what version is used exactly ... but I have it on the release page.
-
-to build specific part you can add `--package <NAME>`
-
-for example if you will try to build ALL crates on linux, you will get an error. so, pass  `--package server` to build only server on linux.
-
-## CEF version
-
-Current versions of CEF and Chromium:
-`89.0.5+gc1f90d8+chromium-89.0.4389.40` `release branch 4389`
-
-```
-Date:             February 26, 2021
-
-CEF Version:      89.0.5+gc1f90d8+chromium-89.0.4389.40
-CEF URL:          https://bitbucket.org/chromiumembedded/cef.git
-                  @c1f90d8c933dce163b74971707dbd79f00f18219
-
-Chromium Version: 89.0.4389.40
-Chromium URL:     https://chromium.googlesource.com/chromium/src.git
-                  @2c3400a2b467aa3cf67b4942740db29e60feecb8
-```
-## Docs
-- [docs/main_ru.md](/docs/main_ru.md)
-- [docs/main_en.md](/docs/main_en.md) (it's better to google translate russian one ...)
-- Also, check out wiki on github.
+- [English API notes](docs/main_en.md)
+- [Russian API notes](docs/main_ru.md)
+- [Build notes](docs/build.md)
 
 ## Video examples
-- https://www.youtube.com/watch?v=Jh9IBlOKoVM (гоблин на весь дом)
-- https://www.youtube.com/watch?v=jU-O8_t1AfI (простые интерфейсы)
-- https://www.youtube.com/watch?v=qs7n8LoVYs4 (кастомный интерфейс гта)
-- https://www.youtube.com/watch?v=vcyTjn3RJhs (голосовой чят)
-- https://www.youtube.com/watch?v=6OnCSHKcOGU (кухня по телеку)
 
-## BIG TODO: EXAMPLES
-But it's similar to fivem or ragemp implementations.
+- [Full-house browser surface](https://www.youtube.com/watch?v=Jh9IBlOKoVM)
+- [Basic interfaces](https://www.youtube.com/watch?v=jU-O8_t1AfI)
+- [Custom GTA interface](https://www.youtube.com/watch?v=qs7n8LoVYs4)
+- [Voice chat](https://www.youtube.com/watch?v=vcyTjn3RJhs)
+- [In-game TV example](https://www.youtube.com/watch?v=6OnCSHKcOGU)

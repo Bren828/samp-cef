@@ -1,23 +1,118 @@
-# Build Notes
+# Build notes
+
+## Pinned CEF input
+
+Client builds use the exact official CEF archive recorded in `cef-distribution.json`. The manifest contains the URL, archive size, SHA-1, SHA-256, CEF/Chromium versions, release branch, and stable CEF API version.
+
+Download and extract the verified distribution with Node.js:
+
+```powershell
+node scripts/download-cef.mjs --output third_party/cef
+$env:CEF_PATH = (Resolve-Path third_party/cef).Path
+```
+
+The downloader refuses to replace an unrelated output directory or reuse an archive whose size or SHA-256 does not match the manifest. `CEF_PATH` is the distribution root containing `Release/libcef.lib`, `Resources/`, and `include/`. Use `--archive <path>` to select the archive cache or `--download-only` to verify the download without extracting it.
+
+## Native Windows build
+
+Install stable Rust, the 32-bit MSVC target, Visual Studio 2022 Build Tools with C++, and Node.js 20 or newer.
+
+```powershell
+rustup target add i686-pc-windows-msvc
+$env:CEF_PATH = (Resolve-Path third_party/cef).Path
+
+cargo build --release --target i686-pc-windows-msvc `
+  -p client -p renderer -p loader
+```
+
+Outputs are written to `target/i686-pc-windows-msvc/release/`:
+
+- `loader.dll` becomes `cef.asi` in the package;
+- `client.dll` is loaded by the ASI loader;
+- `renderer.exe` is the CEF renderer subprocess.
+
+## Runtime package
+
+Never assemble a CEF 150 installation by copying only three binaries. Package the compiled client together with the complete required CEF runtime:
+
+```powershell
+node scripts/package-client.mjs --cef $env:CEF_PATH --output redist
+```
+
+Optional arguments:
+
+- `--target <directory>` selects another directory containing `loader.dll`, `client.dll`, and `renderer.exe`;
+- `--output <directory>` changes the package destination;
+- `--cef <directory>` overrides `CEF_PATH`.
+
+The packager verifies the installed CEF manifest before copying files. It creates `redist/cef.asi`, `redist/cef/`, and `redist/package-manifest.json`. The package manifest records the CEF API version, target triple, and SHA-256 of every runtime payload file.
+
+## Tests and linting
+
+CEF-linked test executables need `Release/libcef.dll` on `PATH`:
+
+```powershell
+$env:CEF_PATH = (Resolve-Path third_party/cef).Path
+$env:PATH = "$env:CEF_PATH\Release;$env:PATH"
+
+cargo test --release --target i686-pc-windows-msvc -p cef -p client
+cargo clippy --release --target i686-pc-windows-msvc -p client --no-deps
+```
+
+## Regenerating CEF bindings
+
+Bindings are generated from the headers in the pinned distribution and the stable API version in `cef-distribution.json`:
+
+```powershell
+$env:CEF_PATH = (Resolve-Path third_party/cef).Path
+$env:LIBCLANG_PATH = "C:/path/to/llvm/bin"
+cargo install bindgen-cli --version 0.72.1 --locked
+node scripts/generate-cef-bindings.mjs
+```
+
+The generator targets Windows x86 and normalizes CEF callbacks to Rust's Windows `system` ABI.
+
+## Cross-compiling the Windows client from macOS/Linux
+
+Install:
+
+- `cargo-xwin` with `cargo install cargo-xwin --locked`;
+- Node.js, `curl`, `7z`, `nasm`, and LLVM with `llvm-lib`;
+- Rust's `i686-pc-windows-msvc` target.
+
+Run:
+
+```sh
+scripts/build-client-win32.sh
+```
+
+The script downloads and verifies CEF when `CEF_PATH` is unset. Set `DX_SDK` to an existing DirectX SDK June 2010 `Lib/x86` directory, or allow the script to download and extract it into `third_party/dxsdk`.
+
+## SA:MP server plugin
+
+Build the legacy 32-bit Linux server plugin separately from the Windows client crates:
+
+```sh
+rustup target add i686-unknown-linux-gnu
+cargo build --release --package server --target i686-unknown-linux-gnu
+```
 
 ## open.mp component
-- Default local build: `scripts/build-openmp-component.sh --openmp-root /path/to/open.mp`.
-- Build and install into a server: `scripts/build-openmp-component.sh --openmp-root /path/to/open.mp --server-root /path/to/omp-server`.
-- Clean rebuild: add `--clean`.
 
-The open.mp checkout path is required through `OPEN_MP_ROOT` or `--openmp-root`.
+Default local build:
 
-Installed component artifacts go into `<server>/components`. Load order is `CEF`.
+```sh
+scripts/build-openmp-component.sh --openmp-root /path/to/open.mp
+```
 
-GitHub Actions builds the open.mp component next to the SA:MP server plugin.
+Build and install into a server:
 
-## Cross-compiling the Windows client (macOS/Linux)
-- Install `cargo-xwin`: `cargo install cargo-xwin --locked`.
-- Ensure `XWIN_ACCEPT_LICENSE=1` is set (the script defaults it).
-- Install `7z` (used to extract the DirectX SDK archive), `nasm`, and LLVM (for `llvm-lib`).
-- Optionally set `DX_SDK` to an existing DirectX SDK `Lib/x86` directory; otherwise the script downloads and extracts it.
-- Run `scripts/build-client-win32.sh`.
+```sh
+scripts/build-openmp-component.sh \
+  --openmp-root /path/to/open.mp \
+  --server-root /path/to/omp-server
+```
 
-The script downloads and verifies the exact distribution from `cef-distribution.json` if `CEF_PATH` is not set, then builds `client`, `renderer`, and `loader` for `i686-pc-windows-msvc`. `CEF_PATH` points to the distribution root containing `Release/libcef.lib`. Outputs land in `target/i686-pc-windows-msvc/release/`.
+Add `--clean` for a clean rebuild. The open.mp checkout can also be provided through `OPEN_MP_ROOT`. Installed component artifacts go into `<server>/components`; the component load name is `CEF`.
 
-After building, run `node scripts/package-client.mjs`. It creates `redist/cef.asi` and a complete `redist/cef/` runtime from the pinned CEF distribution, excluding build-only import libraries and bootstrap executables. `redist/package-manifest.json` records SHA-256 hashes for the package contents.
+See `openmp-component/README.md` for direct CMake commands and configuration details.
