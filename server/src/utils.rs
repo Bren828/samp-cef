@@ -1,5 +1,5 @@
-use log::error;
 use std::str::FromStr;
+use tracing::error;
 
 #[allow(dead_code)]
 pub fn handle_result<T, E: std::fmt::Debug>(result: Result<T, E>) -> Option<T> {

@@ -15,7 +15,7 @@ clean=0
 jobs=""
 cmake_prefix_path="${CMAKE_PREFIX_PATH:-}"
 install_prefix=""
-install_component="samp-cef-openmp"
+install_component="cef-openmp"
 declare -a cef_cmake_args=()
 declare -a grpc_cmake_args=()
 declare -a build_parallel_args=()
@@ -36,7 +36,7 @@ Options:
   --server-root PATH          Install into PATH/components after building.
   --install                   Run cmake --install after building.
   --prefix PATH               CMAKE_INSTALL_PREFIX used with --install.
-  --install-component NAME    CMake install component. Default: samp-cef-openmp.
+  --install-component NAME    CMake install component. Default: cef-openmp.
   --cmake-prefix-path PATH    CMAKE_PREFIX_PATH for grpc/protobuf packages.
   --jobs N                    Parallel build level passed to CMake.
   --clean                     Remove the CEF component build directory first.

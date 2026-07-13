@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 
-use log::{info, trace};
 use server_core::{CoreEvent, EventValue, ServerCore};
+use tracing::{info, trace};
+use tracing_subscriber::filter::{LevelFilter, Targets};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 use samp::amx::AmxIdent;
 use samp::args::Args;
@@ -12,6 +15,18 @@ use samp::{exec_public, initialize_plugin, native};
 mod utils;
 
 const PORT_OFFSET: u16 = 2;
+const LOG_LEVEL_ENV: &str = "SAMP_CEF_LOG_LEVEL";
+
+fn server_log_level() -> (LevelFilter, Option<String>) {
+    let Ok(value) = std::env::var(LOG_LEVEL_ENV) else {
+        return (LevelFilter::INFO, None);
+    };
+
+    match value.trim().to_ascii_lowercase().parse::<LevelFilter>() {
+        Ok(level) => (level, None),
+        Err(_) => (LevelFilter::INFO, Some(value)),
+    }
+}
 
 struct CefPlugin {
     core: ServerCore,
@@ -28,7 +43,7 @@ impl CefPlugin {
         let addr = SocketAddr::from((ip, port + PORT_OFFSET));
         let core = ServerCore::new(addr).unwrap_or_else(|error| panic!("{error}"));
 
-        info!("Bind CEF server on {:?}", addr);
+        info!(%addr, "CEF server bound");
 
         CefPlugin {
             core,
@@ -324,6 +339,27 @@ initialize_plugin!(
         samp::plugin::enable_process_tick();
         samp::encoding::set_default_encoding(samp::encoding::WINDOWS_1251);
         let _ = samp::plugin::logger();
+        let (log_level, invalid_log_level) = server_log_level();
+        let filter = Targets::new()
+            .with_default(LevelFilter::WARN)
+            .with_target("cef_server", log_level)
+            .with_target("cef_server_core", log_level);
+        let format = tracing_subscriber::fmt::layer().compact().with_ansi(false);
+        if tracing_subscriber::registry()
+            .with(filter)
+            .with(format)
+            .try_init()
+            .is_ok()
+        {
+            tracing::info!(level = %log_level, "server logging initialized");
+            if let Some(value) = invalid_log_level {
+                tracing::warn!(
+                    value,
+                    environment = LOG_LEVEL_ENV,
+                    "unknown server log level; using info"
+                );
+            }
+        }
 
         CefPlugin::new()
     }

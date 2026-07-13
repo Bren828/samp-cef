@@ -70,7 +70,7 @@ impl Render {
 }
 
 pub fn initialize(manager: Arc<Mutex<Manager>>) {
-    log::trace!("hooking CEntity::render");
+    tracing::debug!("initializing rendering hooks");
 
     let centity_render = unsafe {
         let render_func: extern "thiscall" fn(*mut CEntity) = std::mem::transmute(0x00534310);
@@ -96,7 +96,7 @@ pub fn initialize(manager: Arc<Mutex<Manager>>) {
         hook
     };
 
-    log::trace!("hooking ok ...");
+    tracing::debug!("rendering hooks initialized");
 
     let counter = FrameCounter {
         start_at: Instant::now(),
@@ -147,7 +147,7 @@ pub fn render() {
 }
 
 fn on_destroy() {
-    log::trace!("rwshutdown ...");
+    tracing::debug!("RenderWare is shutting down");
 
     if let Some(render) = Render::get() {
         let mut manager = render.manager.lock();
@@ -222,11 +222,11 @@ fn ensure_r3_atomic_hooks(render: &mut Render) {
             (*atomic).renderCallBack = Some(atomic_render);
             installed = true;
 
-            log::trace!(
-                "Hooked R3 atomic render path: browser={}, object={}, atomic={:p}",
-                browser_id,
-                object_id,
-                atomic
+            tracing::trace!(
+                browser = browser_id,
+                object = object_id,
+                atomic = ?atomic,
+                "R3 atomic rendering hook installed"
             );
         }
     }
@@ -235,7 +235,7 @@ fn ensure_r3_atomic_hooks(render: &mut Render) {
         && render.centity_render.is_enabled()
         && let Err(error) = unsafe { render.centity_render.disable() }
     {
-        log::warn!("Unable to disable fallback CEntity::Render hook: {error}");
+        tracing::warn!(%error, "cannot disable fallback entity rendering hook");
     }
 }
 
@@ -405,13 +405,13 @@ unsafe fn before_entity_render(materials: &mut [*mut RpMaterial], client: &mut E
                 let width = (raster.width * client.scale) as usize;
                 let height = (raster.height * client.scale) as usize;
 
-                log::trace!(
-                    "Object browser {} matched texture {:?}: {}x{} at scale {}",
-                    client.browser.id(),
-                    client.texture,
-                    raster.width,
-                    raster.height,
-                    client.scale
+                tracing::trace!(
+                    browser = client.browser.id(),
+                    texture = %client.texture,
+                    width = raster.width,
+                    height = raster.height,
+                    scale = client.scale,
+                    "object browser texture matched"
                 );
 
                 view.make_active();

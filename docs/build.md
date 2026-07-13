@@ -22,14 +22,14 @@ rustup target add i686-pc-windows-msvc
 $env:CEF_PATH = (Resolve-Path third_party/cef).Path
 
 cargo build --release --target i686-pc-windows-msvc `
-  -p client -p renderer -p loader
+  -p cef-client -p cef-renderer -p cef-loader
 ```
 
 Outputs are written to `target/i686-pc-windows-msvc/release/`:
 
-- `loader.dll` becomes `cef.asi` in the package;
-- `client.dll` is loaded by the ASI loader;
-- `renderer.exe` is the CEF renderer subprocess.
+- `cef_loader.dll` becomes `cef.asi` in the package;
+- `cef_client.dll` becomes `cef/cef-client.dll` and is loaded by the ASI loader;
+- `cef-renderer.exe` is the CEF renderer subprocess.
 
 ## Runtime package
 
@@ -41,7 +41,7 @@ node scripts/package-client.mjs --cef $env:CEF_PATH --output redist
 
 Optional arguments:
 
-- `--target <directory>` selects another directory containing `loader.dll`, `client.dll`, and `renderer.exe`;
+- `--target <directory>` selects another directory containing `cef_loader.dll`, `cef_client.dll`, and `cef-renderer.exe`;
 - `--output <directory>` changes the package destination;
 - `--cef <directory>` overrides `CEF_PATH`.
 
@@ -55,8 +55,8 @@ CEF-linked test executables need `Release/libcef.dll` on `PATH`:
 $env:CEF_PATH = (Resolve-Path third_party/cef).Path
 $env:PATH = "$env:CEF_PATH\Release;$env:PATH"
 
-cargo test --release --target i686-pc-windows-msvc -p cef -p client
-cargo clippy --release --target i686-pc-windows-msvc -p client --no-deps
+cargo test --release --target i686-pc-windows-msvc -p cef -p cef-client
+cargo clippy --release --target i686-pc-windows-msvc -p cef-client --no-deps
 ```
 
 ## Regenerating CEF bindings
@@ -94,7 +94,7 @@ Build the legacy 32-bit Linux server plugin separately from the Windows client c
 
 ```sh
 rustup target add i686-unknown-linux-gnu
-cargo build --release --package server --target i686-unknown-linux-gnu
+cargo build --release --package cef-server --target i686-unknown-linux-gnu
 ```
 
 ## open.mp component

@@ -34,7 +34,7 @@ impl NetworkClient {
             if let Some(network) = Network::new(net_tx.clone(), client_rx) {
                 network.run();
             } else {
-                log::trace!("network error ...");
+                tracing::error!("cannot initialize CEF network client");
                 std::thread::sleep(Duration::from_secs(2));
                 handle_result(net_tx.send(Event::NetworkError));
             }
@@ -117,9 +117,9 @@ impl Network {
                 if let ConnectionState::Auth(_, _, peer) = &self.connection_state {
                     self.net_connect(*peer);
                 } else {
-                    log::trace!(
-                        "CEF Network: Got OpenConnection from server, but connection_state is {:?}",
-                        self.connection_state
+                    tracing::trace!(
+                        state = ?self.connection_state,
+                        "unexpected open-connection response"
                     );
                 }
             }
@@ -211,21 +211,18 @@ impl Network {
             if packet.success {
                 self.connection_state = ConnectionState::Connected(addr, peer);
 
-                log::trace!("CEF Network: JoinResponse OK. {:?}", self.connection_state);
+                tracing::debug!(server = %addr, ?peer, "CEF server handshake completed");
                 handle_result(self.event_tx.send(Event::NetworkJoined));
             } else {
                 self.connection_state = ConnectionState::Disconnected;
-                log::trace!(
-                    "CEF Network: JoinResponse failed. server_version: {:?}",
-                    packet.current_version
+                tracing::trace!(
+                    server_version = packet.current_version,
+                    "CEF server rejected client version"
                 );
                 handle_result(self.event_tx.send(Event::BadVersion));
             }
         } else {
-            log::trace!(
-                "CEF Network: JoinResponse error. {:?}",
-                self.connection_state
-            );
+            tracing::trace!(state = ?self.connection_state, "unexpected join response");
         }
     }
 
@@ -331,10 +328,10 @@ impl Network {
         let peer = self.socket.connect(address);
         self.connection_state = ConnectionState::Auth(address, Instant::now(), peer);
 
-        log::trace!("CEF Network: OpenConnection ({})", address);
-        log::trace!(
-            "CEF Network: Elapsed since Network module created {:?}",
-            self.timings.elapsed()
+        tracing::debug!(server = %address, ?peer, "opening CEF server connection");
+        tracing::trace!(
+            elapsed_ms = self.timings.elapsed().as_millis(),
+            "network startup elapsed"
         );
     }
 
@@ -344,11 +341,11 @@ impl Network {
         };
 
         let Ok(packet) = messages::try_into_packet(auth) else {
-            log::error!("CEF Network: failed to serialize RequestJoin");
+            tracing::error!(packet = "request_join", "cannot serialize network packet");
             return;
         };
 
-        log::trace!("CEF Network: RequestJoin ({:?})", peer);
+        tracing::trace!(?peer, "sending join request");
 
         self.socket.send_message(peer, packet);
     }
@@ -362,7 +359,7 @@ impl Network {
             };
 
             let Ok(packet) = messages::try_into_packet(emit) else {
-                log::error!("CEF Network: failed to serialize EmitEvent");
+                tracing::error!(packet = "emit_event", "cannot serialize network packet");
                 return;
             };
 
@@ -378,7 +375,10 @@ impl Network {
             };
 
             let Ok(packet) = messages::try_into_packet(created) else {
-                log::error!("CEF Network: failed to serialize BrowserCreated");
+                tracing::error!(
+                    packet = "browser_created",
+                    "cannot serialize network packet"
+                );
                 return;
             };
 
@@ -395,13 +395,13 @@ impl Network {
                             && let Err(e) = deserialize_from_slice(&packet)
                                 .map(|packet| self.handle_packet(packet))
                         {
-                            log::trace!("malformed packet from the server: {}", e);
+                            tracing::warn!(error = %e, "malformed packet received from CEF server");
                         }
                     }
 
                     SocketEvent::Disconnect(peer, _addr) => {
                         if peer == server_peer {
-                            log::trace!("CEF Network: Timeout");
+                            tracing::debug!(?peer, "CEF server disconnected");
                             handle_result(self.event_tx.send(Event::Timeout));
 
                             if !self.connection_state.is_auth() {
@@ -410,8 +410,8 @@ impl Network {
                         }
                     }
 
-                    SocketEvent::ConnectionError(_) => {
-                        log::trace!("CEF Network: ConnectionError");
+                    SocketEvent::ConnectionError(error) => {
+                        tracing::warn!(?error, "CEF connection failed");
                         handle_result(self.event_tx.send(Event::Timeout));
 
                         if !self.connection_state.is_auth() {
@@ -427,7 +427,7 @@ impl Network {
         if let ConnectionState::Auth(addr, time, _) = &self.connection_state
             && time.elapsed() >= Duration::from_millis(2500)
         {
-            log::trace!("CEF Network: CEF didn't connect. Retrying ...");
+            tracing::debug!(server = %addr, "retrying CEF server connection");
             self.net_open_connection(*addr);
         }
     }

@@ -94,27 +94,23 @@ impl Manager {
 
     pub fn create_browser(&mut self, id: u32, cbs: CallbackList, url: &str) {
         let render_mode = crate::utils::current_render_mode();
-        log::trace!(
-            "manager::create_browser({}, {:?}) render_mode: {:?}",
-            id,
-            url,
-            render_mode
-        );
+        tracing::trace!(browser = id, url, ?render_mode, "creating overlay browser");
 
-        let client = WebClient::new(id, cbs, self.event_tx.clone());
-
-        log::trace!("crate::browser::cef::create_browser");
+        let client = WebClient::new(id, cbs, self.event_tx.clone(), self.audio.clone());
 
         crate::browser::cef::create_browser(client.clone(), url);
         self.append_client(id, client);
     }
 
     pub fn create_browser_on_texture(&mut self, ext: &ExternalBrowser, cbs: CallbackList) {
-        log::trace!("manager::create_browser_on_texture({:?})", ext);
+        tracing::trace!(
+            browser = ext.id,
+            texture = %ext.texture,
+            scale = ext.scale,
+            "creating object browser"
+        );
 
         let client = WebClient::new_extern(ext.id, cbs, self.event_tx.clone(), self.audio.clone());
-
-        log::trace!("crate::browser::cef::create_browser");
 
         crate::browser::cef::create_browser(client.clone(), &ext.url);
         self.append_client(ext.id, client.clone());
@@ -140,10 +136,10 @@ impl Manager {
         self.clients_on_txd.push(ext_client);
 
         if let Some(object_ids) = self.pending_object_ids.remove(&ext.id) {
-            log::trace!(
-                "Applying {} pending object attachment(s) to browser {}",
-                object_ids.len(),
-                ext.id
+            tracing::trace!(
+                browser = ext.id,
+                objects = object_ids.len(),
+                "applying pending object attachments"
             );
 
             for object_id in object_ids {
@@ -154,17 +150,21 @@ impl Manager {
 
     #[inline]
     pub fn browser_append_to_object(&mut self, id: u32, object_id: i32) {
-        log::trace!("Attaching external browser {} to object {}", id, object_id);
+        tracing::debug!(
+            browser = id,
+            object = object_id,
+            "attaching browser to object"
+        );
 
         if !self
             .clients_on_txd
             .iter()
             .any(|client| client.browser.id() == id)
         {
-            log::trace!(
-                "Queuing object {} attachment until external browser {} is created",
-                object_id,
-                id
+            tracing::trace!(
+                browser = id,
+                object = object_id,
+                "queuing object attachment until browser is ready"
             );
             self.pending_object_ids
                 .entry(id)
@@ -247,7 +247,7 @@ impl Manager {
 
     #[inline]
     pub fn on_lost_device(&mut self) {
-        log::trace!("manager::on_lost_device");
+        tracing::debug!("Direct3D device lost");
 
         for browser in self.clients.values() {
             browser.on_lost_device();
@@ -263,7 +263,7 @@ impl Manager {
 
     #[inline]
     pub fn on_reset_device(&self) {
-        log::trace!("manager::on_reset_device");
+        tracing::debug!("Direct3D device reset");
 
         for client in self.clients.values() {
             client.on_reset_device();
@@ -276,12 +276,12 @@ impl Manager {
 
     #[inline]
     pub fn resize(&mut self, width: usize, height: usize) {
-        log::trace!(
-            "manager::resize(width: {}, height: {}) current values: {} {}",
+        tracing::trace!(
             width,
             height,
-            self.view_width,
-            self.view_height
+            previous_width = self.view_width,
+            previous_height = self.view_height,
+            "resizing browsers"
         );
 
         if width == self.view_width && height == self.view_height {
@@ -580,43 +580,36 @@ impl Manager {
     }
 
     pub fn initialize_cef(&mut self) {
-        log::trace!("manager::intialize_cef() cef_running: {}", self.cef_running);
-
         if self.cef_running {
+            tracing::debug!("CEF runtime is already initialized");
             return;
         }
 
-        log::trace!("PRE cef::initalize()");
         let initialized = crate::browser::cef::initialize(self.event_tx.clone());
-        log::trace!("POST cef::initalize()");
 
         self.cef_running = initialized;
         if !initialized {
-            log::error!("CEF initialization failed or another process owns root_cache_path");
+            tracing::error!("CEF runtime initialization failed");
         }
     }
 
     pub fn shutdown_cef(&mut self) {
-        log::trace!("manager::shutdown_cef() cef_running: {}", self.cef_running);
-
         if !self.cef_running {
             return;
         }
 
-        log::trace!("PRE cef::shutdown()");
+        tracing::debug!("shutting down CEF runtime");
         crate::browser::cef::shutdown();
         self.cef_running = false;
-        log::trace!("POST cef::shutdown()");
+        tracing::debug!("CEF runtime shut down");
     }
 
     pub fn remove_views(&mut self) {
-        log::trace!("remove views");
+        tracing::trace!(browsers = self.clients.len(), "removing browser views");
 
         for client in self.clients.values() {
             client.remove_view();
         }
-
-        log::trace!("remove views done");
     }
 
     #[inline]
@@ -644,19 +637,12 @@ impl Manager {
     }
 
     fn internal_close_client(client: Arc<WebClient>, audio: &Arc<Audio>, force_close: bool) {
-        log::trace!("internal_close_client");
+        let browser = client.id();
+        tracing::debug!(browser, force = force_close, "closing browser");
 
         client.close(force_close);
-
-        log::trace!("remove_view");
-
         client.remove_view();
-
-        log::trace!("remove_all_streams");
-
-        audio.remove_all_streams(client.id());
-
-        log::trace!("internal_close_client end");
+        audio.remove_all_streams(browser);
     }
 
     fn cleanup_focus_after_close(&mut self, closed_id: u32) {

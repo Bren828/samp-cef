@@ -1,8 +1,8 @@
 use crossbeam_channel::{Receiver, Sender};
-use log::trace;
 use messages::{packets, try_into_packet};
 use network::{CertStrategy, Event as SocketEvent, PeerId, Socket};
 use quick_protobuf::deserialize_from_slice;
+use tracing::trace;
 
 use std::collections::HashMap;
 use std::convert::TryInto;

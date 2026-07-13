@@ -143,7 +143,10 @@ unsafe extern "system" fn exception_filter(exception_info: *mut EXCEPTION_POINTE
         modules,
     };
 
-    log::trace!("{}", serde_json::to_string_pretty(&report).unwrap());
+    tracing::error!(
+        report = %serde_json::to_string(&report).unwrap(),
+        "client crash captured"
+    );
 
     if let Some(origin) = EXCEPTION_FILTER.as_mut() {
         return origin(exception_info);

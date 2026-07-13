@@ -45,8 +45,8 @@ cmake -S openmp-component/component --preset default
 (cd openmp-component/component && cmake --build --preset default)
 ```
 
-The install rules are isolated under the `samp-cef-openmp` CMake install component, so installing CEF does not also install open.mp SDK dependencies:
+The install rules are isolated under the `cef-openmp` CMake install component, so installing CEF does not also install open.mp SDK dependencies:
 
 ```sh
-cmake --install target/openmp-component-build --component samp-cef-openmp
+cmake --install target/openmp-component-build --component cef-openmp
 ```

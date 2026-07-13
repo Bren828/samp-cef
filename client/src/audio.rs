@@ -1,16 +1,32 @@
-use alto::{Alto, Buffer, Context, DistanceModel, Mono, Source, SourceState, StreamingSource};
 use client_api::gta::matrix::{CVector, RwMatrix};
-
-use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
-use std::time::{Duration, Instant};
+use client_api::gta::menu_manager::CMenuManager;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, SampleFormat, SizedSample};
+use crossbeam_channel::{Receiver, Sender};
+use crossbeam_queue::ArrayQueue;
+use hrtf::{HrirSphere, HrtfContext, HrtfProcessor, Vec3};
+use nalgebra::{Point3, Rotation3, Vector3};
+use parking_lot::{Mutex, RwLock};
+use std::collections::{HashMap, VecDeque};
+use std::io::Cursor;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use winapi::um::winuser::{GetForegroundWindow, IsIconic};
 
 pub const MAX_DISTANCE: f32 = 50.0;
 pub const REFRENCE_DISTANCE: f32 = 15.0;
+
+const HRTF_INTERPOLATION_STEPS: usize = 2;
+const HRTF_BLOCK_LEN: usize = 128;
+const MIX_FRAMES: usize = HRTF_INTERPOLATION_STEPS * HRTF_BLOCK_LEN;
+const OUTPUT_QUEUE_BLOCKS: usize = 8;
+const OUTPUT_TARGET_BLOCKS: usize = 4;
+const COMMAND_QUEUE_CAPACITY: usize = 256;
+const INPUT_PREBUFFER_MS: usize = 40;
+const MAX_INPUT_BUFFER_MS: usize = 250;
+
+const HRIR_SPHERE: &[u8] = include_bytes!("../assets/IRC_1002_C.bin");
 
 #[derive(Copy, Clone)]
 pub struct BrowserAudioSettings {
@@ -18,465 +34,854 @@ pub struct BrowserAudioSettings {
     pub reference_distance: f32,
 }
 
+struct Listener {
+    position: Point3<f32>,
+    rotation: Rotation3<f32>,
+}
+
+#[derive(Clone, Copy)]
+struct StreamFormat {
+    channels: usize,
+    spatial: bool,
+}
+
+type StereoFrame = (f32, f32);
+
+enum Command {
+    Stream {
+        browser: u32,
+        stream_id: i32,
+        sample_rate: i32,
+        spatial: bool,
+    },
+    Source {
+        browser: u32,
+        object_id: i32,
+    },
+    Pcm {
+        browser: u32,
+        stream_id: i32,
+        data: Vec<StereoFrame>,
+    },
+    RemoveStream {
+        browser: u32,
+        stream_id: i32,
+    },
+    RemoveAllStreams {
+        browser: u32,
+    },
+    RemoveSource {
+        browser: u32,
+        object_id: i32,
+    },
+    ObjectSettings {
+        object_id: i32,
+        position: Point3<f32>,
+        velocity: Point3<f32>,
+        settings: BrowserAudioSettings,
+    },
+    Gain(f32),
+    MuteObject(i32),
+    TogglePause(bool),
+    Terminate,
+}
+
 pub struct Audio {
-    alto: Alto,
-    context: Context,
+    command_tx: Sender<Command>,
+    stream_formats: RwLock<HashMap<(u32, i32), StreamFormat>>,
+    listener: Mutex<Listener>,
+    pcm_seen: AtomicBool,
     paused: AtomicBool,
-    terminate: AtomicBool,
-    streams: Mutex<HashMap<u32, Vec<AudioStream>>>, // browser_id -> streams
-}
-
-pub struct AudioStream {
-    stream_id: i32,
-    sample_rate: i32,
-    channels: i32,
-    max_frames: i32,
-    last_pts: u64,
-    last_frame_len: usize,
-    pending_pcm: BTreeMap<u64, Vec<f32>>,
-    sources: HashMap<i32, AudioSource>, // object_id -> source
-}
-
-impl AudioStream {
-    pub fn play(&mut self) {
-        self.sources.values_mut().for_each(|source| source.play());
-    }
-
-    pub fn clear_queue(&mut self) {
-        self.pending_pcm = BTreeMap::new();
-    }
-
-    pub fn reset(&mut self) {
-        self.clear_queue();
-
-        self.sources.values_mut().for_each(|source| {
-            while source.source.buffers_queued() != 0 && source.source.buffers_processed() != 0 {
-                if let Ok(buffer) = source.source.unqueue_buffer() {
-                    source.buffers.push(buffer);
-                }
-            }
-        })
-    }
-
-    pub fn unqueue_buffers(&mut self) {
-        self.sources
-            .values_mut()
-            .for_each(|source| source.unqueue_buffers());
-    }
-}
-
-pub struct AudioSource {
-    buffers: Vec<Buffer>,
-    source: StreamingSource,
-    muted: bool,
-}
-
-impl AudioSource {
-    pub fn queue(&mut self, sample_rate: i32, pcm: &[f32]) -> bool {
-        if let Some(mut buffer) = self.free_buffer() {
-            buffer.set_data::<Mono<f32>, _>(&pcm, sample_rate);
-            self.source.queue_buffer(buffer);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn play(&mut self) {
-        match self.source.state() {
-            SourceState::Initial | SourceState::Stopped => {
-                self.source.play();
-            }
-
-            _ => (),
-        }
-    }
-
-    pub fn stop(&mut self) {
-        self.source.stop();
-    }
-
-    pub fn unqueue_buffers(&mut self) {
-        while self.source.buffers_processed() != 0 {
-            if let Ok(buffer) = self.source.unqueue_buffer() {
-                self.buffers.push(buffer);
-            }
-        }
-    }
-
-    fn free_buffer(&mut self) -> Option<Buffer> {
-        if let Some(buffer) = self.buffers.pop() {
-            Some(buffer)
-        } else if self.source.buffers_processed() > 0 {
-            self.source.unqueue_buffer().ok()
-        } else {
-            None
-        }
-    }
 }
 
 impl Audio {
-    pub fn new() -> Arc<Audio> {
-        let path = crate::utils::cef_dir().join("sound.dll");
+    pub fn new() -> Arc<Self> {
+        let (command_tx, command_rx) = crossbeam_channel::bounded(COMMAND_QUEUE_CAPACITY);
 
-        log::trace!("audio path: {:?}", path);
+        std::thread::Builder::new()
+            .name("cef-audio-mixer".to_owned())
+            .spawn(move || audio_thread(command_rx))
+            .expect("cannot spawn audio mixer thread");
 
-        let alto = match Alto::load(path) {
-            Ok(alto) => alto,
-            Err(err) => {
-                log::trace!("Alto::load error: {:?}", err);
-
-                client_api::utils::error_message_box(
-                    "CEF error",
-                    "There is no OpenAL library (sound.dll) in the CEF folder.\nPlease reinstall the plugin and try again.",
-                );
-
-                std::thread::sleep(std::time::Duration::from_secs(10));
-                std::process::exit(0);
-            }
-        };
-
-        log::trace!("openaal loaded opening device and creating context");
-
-        let context = match alto.open(None).and_then(|device| device.new_context(None)) {
-            Ok(ctx) => ctx,
-            Err(err) => {
-                log::trace!("openal new_context error: {:?}", err);
-
-                client_api::utils::error_message_box(
-                    "CEF error",
-                    "There is no default output device.",
-                );
-
-                std::thread::sleep(std::time::Duration::from_secs(10));
-                std::process::exit(0);
-            }
-        };
-
-        context.use_source_distance_model(true);
-        context.set_gain(1.0);
-
-        let audio = Audio {
-            alto,
-            context,
+        Arc::new(Self {
+            command_tx,
+            stream_formats: RwLock::new(HashMap::new()),
+            listener: Mutex::new(Listener {
+                position: Point3::origin(),
+                rotation: Rotation3::identity(),
+            }),
+            pcm_seen: AtomicBool::new(false),
             paused: AtomicBool::new(false),
-            terminate: AtomicBool::new(false),
-            streams: Mutex::new(HashMap::new()),
-        };
+        })
+    }
 
-        let audio = Arc::new(audio);
-        let another_audio = audio.clone();
-
-        log::trace!("spawning audio thread");
-
-        std::thread::spawn(move || audio_thread(another_audio));
-
-        audio
+    fn send_control(&self, command: Command) {
+        if let Err(error) = self.command_tx.send(command) {
+            tracing::error!(%error, "audio mixer is unavailable");
+        }
     }
 
     pub fn create_stream(
-        &self, browser: u32, stream_id: i32, channels: i32, sample_rate: i32, max_frames: i32,
+        &self, browser: u32, stream_id: i32, channels: i32, sample_rate: i32, _max_frames: i32,
+        spatial: bool,
     ) {
-        let mut streams = self.streams.lock().unwrap();
-        let entries = streams
-            .entry(browser)
-            .or_insert_with(|| Vec::with_capacity(1));
-
-        let audio_stream = AudioStream {
+        self.stream_formats.write().insert(
+            (browser, stream_id),
+            StreamFormat {
+                channels: channels.max(1) as usize,
+                spatial,
+            },
+        );
+        tracing::info!(
+            browser,
             stream_id,
             sample_rate,
             channels,
-            max_frames,
-            last_pts: 0,
-            last_frame_len: 0,
-            pending_pcm: BTreeMap::new(),
-            sources: HashMap::new(),
-        };
-
-        entries.push(audio_stream);
+            spatial,
+            "audio stream started"
+        );
+        self.send_control(Command::Stream {
+            browser,
+            stream_id,
+            sample_rate: sample_rate.max(1),
+            spatial,
+        });
     }
 
     /// # Safety
-    /// `data` must point to valid PCM buffers for the lifetime of this call.
+    /// `data` must point to `channels` valid planar PCM buffers containing `frames` samples each.
     pub unsafe fn append_pcm(
         &self, browser: u32, stream_id: i32, data: *mut *const f32, frames: i32, pts: u64,
     ) {
-        if self.paused.load(Ordering::SeqCst) {
+        if frames <= 0 || data.is_null() {
             return;
         }
 
-        if frames == 0 || data.is_null() {
+        if crate::utils::current_time() - pts as i128 >= 1000 {
             return;
         }
 
-        let current_time = crate::utils::current_time();
-
-        if current_time - pts as i128 > 0 {
-            return;
+        if !self.pcm_seen.swap(true, Ordering::Relaxed) {
+            tracing::info!(browser, stream_id, frames, "first audio PCM received");
         }
 
-        let mut streams = self.streams.lock().unwrap();
+        let format = self
+            .stream_formats
+            .read()
+            .get(&(browser, stream_id))
+            .copied()
+            .unwrap_or(StreamFormat {
+                channels: 1,
+                spatial: false,
+            });
+        let frames = frames as usize;
+        let mut stereo = Vec::with_capacity(frames);
 
-        if let Some(entries) = streams.get_mut(&browser) {
-            if let Some(stream) = entries
-                .iter_mut()
-                .find(|stream| stream.stream_id == stream_id)
-            {
-                let frames = frames as usize;
-                let factor = 1.0 / stream.channels as f32;
-
-                let mut pending = vec![0.0; frames];
-
-                unsafe {
-                    std::slice::from_raw_parts(data, stream.channels as usize)
-                        .iter()
-                        .map(|&ptr| std::slice::from_raw_parts(ptr, frames))
-                        .for_each(|inner| {
-                            inner
-                                .iter()
-                                .enumerate()
-                                .for_each(|(i, x)| pending[i] += x * factor)
-                        });
+        unsafe {
+            let channels = std::slice::from_raw_parts(data, format.channels);
+            if format.spatial {
+                for frame in 0..frames {
+                    let mut mono = 0.0;
+                    let mut valid_channels = 0;
+                    for &channel in channels {
+                        if !channel.is_null() {
+                            mono += *channel.add(frame);
+                            valid_channels += 1;
+                        }
+                    }
+                    if valid_channels > 0 {
+                        mono /= valid_channels as f32;
+                    }
+                    stereo.push((mono, mono));
                 }
-
-                stream.pending_pcm.insert(pts, pending);
+            } else {
+                let left = channels[0];
+                let right = channels.get(1).copied().unwrap_or(left);
+                for frame in 0..frames {
+                    let left = if left.is_null() {
+                        0.0
+                    } else {
+                        *left.add(frame)
+                    };
+                    let right = if right.is_null() {
+                        left
+                    } else {
+                        *right.add(frame)
+                    };
+                    stereo.push((left, right));
+                }
             }
         }
+
+        // PCM is intentionally lossy under overload: keeping old audio would increase A/V latency.
+        let _ = self.command_tx.try_send(Command::Pcm {
+            browser,
+            stream_id,
+            data: stereo,
+        });
     }
 
     pub fn remove_stream(&self, browser: u32, stream_id: i32) {
-        let mut remove = false;
-        let mut streams = self.streams.lock().unwrap();
-
-        if let Some(entries) = streams.get_mut(&browser) {
-            if let Some(idx) = entries
-                .iter()
-                .position(|entry| entry.stream_id == stream_id)
-            {
-                entries.remove(idx);
-            }
-
-            remove = entries.len() == 0;
-        }
-
-        if remove {
-            streams.remove(&browser);
-        }
+        self.stream_formats.write().remove(&(browser, stream_id));
+        self.send_control(Command::RemoveStream { browser, stream_id });
     }
 
     pub fn remove_all_streams(&self, browser: u32) {
-        let mut streams = self.streams.lock().unwrap();
-        streams.remove(&browser);
+        self.stream_formats
+            .write()
+            .retain(|(stream_browser, _), _| *stream_browser != browser);
+        self.send_control(Command::RemoveAllStreams { browser });
     }
 
     pub fn add_source(&self, browser: u32, object_id: i32) {
-        let mut streams = self.streams.lock().unwrap();
-
-        if let Some(entries) = streams.get_mut(&browser) {
-            entries.iter_mut().for_each(|entry| {
-                if entry.sources.contains_key(&object_id) {
-                    return;
-                }
-
-                let mut source = self.context.new_streaming_source().unwrap();
-                let plain_data = vec![0.0f32; entry.max_frames as usize];
-                let mut buffers = Vec::with_capacity(50);
-
-                for _ in 0..50 {
-                    let buffer = self
-                        .context
-                        .new_buffer::<Mono<f32>, _>(plain_data.as_slice(), entry.sample_rate)
-                        .unwrap();
-
-                    buffers.push(buffer);
-                }
-
-                source.set_distance_model(DistanceModel::ExponentClamped);
-                source.set_max_distance(MAX_DISTANCE);
-                source.set_reference_distance(REFRENCE_DISTANCE);
-                source.set_rolloff_factor(7.0);
-                source.set_relative(false);
-                source.set_max_gain(0.0); //
-
-                let audio_source = AudioSource {
-                    source,
-                    buffers,
-                    muted: true,
-                };
-
-                entry.sources.insert(object_id, audio_source);
-            });
-        }
+        self.send_control(Command::Source { browser, object_id });
     }
 
     pub fn remove_source(&self, browser: u32, object_id: i32) {
-        let mut streams = self.streams.lock().unwrap();
-
-        if let Some(entries) = streams.get_mut(&browser) {
-            entries.iter_mut().for_each(|entry| {
-                let _ = entry.sources.remove(&object_id);
-            });
-        }
+        self.send_control(Command::RemoveSource { browser, object_id });
     }
 
     pub fn set_gain(&self, gain: f32) {
-        if !self.paused.load(Ordering::SeqCst) {
-            self.context.set_gain(gain);
-        }
+        self.send_control(Command::Gain(gain.max(0.0)));
     }
 
-    pub fn set_velocity(&self, velocity: CVector) {
-        self.context
-            .set_velocity([velocity.x, velocity.y, velocity.z]);
-    }
+    pub fn set_velocity(&self, _velocity: CVector) {}
 
     pub fn set_position(&self, position: CVector) {
-        self.context
-            .set_position([position.x, position.y, position.z]);
+        self.listener.lock().position = Point3::new(position.x, position.y, position.z);
     }
 
     pub fn set_orientation(&self, matrix: RwMatrix) {
-        self.context.set_orientation((
-            [-matrix.at.x, -matrix.at.y, -matrix.at.z],
-            [matrix.up.x, matrix.up.y, matrix.up.z],
-        ));
+        let at = Vector3::new(-matrix.at.x, -matrix.at.y, -matrix.at.z);
+        let up = Vector3::new(matrix.up.x, matrix.up.y, matrix.up.z);
+        self.listener.lock().rotation = Rotation3::face_towards(&at, &up);
     }
 
     pub fn set_object_settings(
-        &self, object_id: i32, pos: CVector, velo: CVector, direction: CVector,
+        &self, object_id: i32, position: CVector, velocity: CVector, _direction: CVector,
         settings: BrowserAudioSettings,
     ) {
-        self.for_object(object_id, |source| {
-            source.source.set_position([pos.x, pos.y, pos.z]);
-            source.source.set_velocity([velo.x, velo.y, velo.z]);
+        let relative_position = {
+            let listener = self.listener.lock();
+            let relative = Point3::new(
+                position.x - listener.position.x,
+                position.y - listener.position.y,
+                position.z - listener.position.z,
+            );
+            listener.rotation.transform_point(&relative)
+        };
 
-            source
-                .source
-                .set_direction([direction.x, direction.y, direction.z]);
-
-            source.source.set_max_distance(settings.max_distance);
-            source
-                .source
-                .set_reference_distance(settings.reference_distance);
-
-            if source.muted {
-                source.source.set_max_gain(1.0);
-                source.muted = false;
-            }
+        self.send_control(Command::ObjectSettings {
+            object_id,
+            position: relative_position,
+            velocity: Point3::new(velocity.x, velocity.y, velocity.z),
+            settings,
         });
     }
 
     pub fn object_mute(&self, object_id: i32) {
-        self.for_object(object_id, |source| {
-            if !source.muted {
-                source.source.set_max_gain(0.0);
-                source.muted = true;
-            }
-        });
+        self.send_control(Command::MuteObject(object_id));
     }
 
     pub fn set_paused(&self, paused: bool) {
-        let prev = self.paused.swap(paused, Ordering::SeqCst);
-
-        if prev != paused && paused {
-            self.context.set_gain(0.0);
-            let mut streams = self.streams.lock().unwrap();
-
-            streams.values_mut().for_each(|stream| {
-                stream.iter_mut().for_each(|stream| {
-                    stream.reset();
-                })
-            });
+        if self.paused.swap(paused, Ordering::AcqRel) != paused {
+            self.send_control(Command::TogglePause(paused));
         }
     }
 
     pub fn terminate(&self) {
-        self.terminate.store(true, Ordering::SeqCst);
-    }
-
-    fn for_object<F>(&self, object_id: i32, mut func: F)
-    where
-        F: FnMut(&mut AudioSource),
-    {
-        let mut streams = self.streams.lock().unwrap();
-
-        streams.values_mut().for_each(|stream| {
-            stream.iter_mut().for_each(|stream| {
-                stream.sources.get_mut(&object_id).map(|source| {
-                    func(source);
-                });
-            })
-        });
+        self.send_control(Command::Terminate);
     }
 }
 
-fn audio_thread(audio: Arc<Audio>) {
-    loop {
-        if audio.terminate.load(Ordering::SeqCst) {
-            break;
+struct SpatialSource {
+    object_id: i32,
+    position: Point3<f32>,
+    #[allow(dead_code)]
+    velocity: Point3<f32>,
+    settings: BrowserAudioSettings,
+    muted: bool,
+    previous_direction: Vec3,
+    previous_gain: f32,
+    previous_left: Vec<f32>,
+    previous_right: Vec<f32>,
+    rendered_once: bool,
+}
+
+impl SpatialSource {
+    fn new(object_id: i32) -> Self {
+        Self {
+            object_id,
+            position: Point3::new(0.0, 0.0, 1.0),
+            velocity: Point3::origin(),
+            settings: BrowserAudioSettings {
+                max_distance: MAX_DISTANCE,
+                reference_distance: REFRENCE_DISTANCE,
+            },
+            muted: true,
+            previous_direction: Vec3::new(0.0, 0.0, 1.0),
+            previous_gain: 0.0,
+            previous_left: Vec::new(),
+            previous_right: Vec::new(),
+            rendered_once: false,
+        }
+    }
+
+    fn reset_history(&mut self) {
+        self.previous_gain = 0.0;
+        self.previous_left.clear();
+        self.previous_right.clear();
+    }
+}
+
+struct AudioStream {
+    stream_id: i32,
+    sample_rate: u32,
+    spatial: bool,
+    input: VecDeque<StereoFrame>,
+    resample_phase: f64,
+    playing: bool,
+    sources: HashMap<i32, SpatialSource>,
+}
+
+impl AudioStream {
+    fn new(stream_id: i32, sample_rate: i32, spatial: bool) -> Self {
+        Self {
+            stream_id,
+            sample_rate: sample_rate as u32,
+            spatial,
+            input: VecDeque::new(),
+            resample_phase: 0.0,
+            playing: false,
+            sources: HashMap::new(),
+        }
+    }
+
+    fn append(&mut self, samples: Vec<StereoFrame>) {
+        self.input.extend(samples);
+        let max_len = self.sample_rate as usize * MAX_INPUT_BUFFER_MS / 1000;
+        if self.input.len() > max_len {
+            let drop_count = self.input.len() - max_len;
+            self.input.drain(..drop_count);
+            self.resample_phase = 0.0;
+        }
+    }
+
+    fn render_stereo(&mut self, output_rate: u32, output: &mut [StereoFrame; MIX_FRAMES]) -> bool {
+        output.fill((0.0, 0.0));
+        let prebuffer = self.sample_rate as usize * INPUT_PREBUFFER_MS / 1000;
+        if !self.playing {
+            if self.input.len() < prebuffer.max(2) {
+                return false;
+            }
+            self.playing = true;
         }
 
-        if !audio.paused.load(Ordering::SeqCst) {
-            let mut browsers = audio.streams.lock().unwrap();
+        let step = self.sample_rate as f64 / output_rate as f64;
+        let required = (self.resample_phase + step * (MIX_FRAMES - 1) as f64).floor() as usize + 2;
+        if self.input.len() < required {
+            self.input.clear();
+            self.resample_phase = 0.0;
+            self.playing = false;
+            return false;
+        }
 
-            for streams in browsers.values_mut() {
+        for sample in output.iter_mut() {
+            let index = self.resample_phase.floor() as usize;
+            let fraction = (self.resample_phase - index as f64) as f32;
+            let a = self.input[index];
+            let b = self.input[index + 1];
+            *sample = (a.0 + (b.0 - a.0) * fraction, a.1 + (b.1 - a.1) * fraction);
+            self.resample_phase += step;
+        }
+
+        let consumed = self.resample_phase.floor() as usize;
+        self.input.drain(..consumed);
+        self.resample_phase -= consumed as f64;
+        true
+    }
+
+    fn render_mono(&mut self, output_rate: u32, output: &mut [f32; MIX_FRAMES]) -> bool {
+        let mut stereo = [(0.0, 0.0); MIX_FRAMES];
+        if !self.render_stereo(output_rate, &mut stereo) {
+            output.fill(0.0);
+            return false;
+        }
+
+        for (output, (left, right)) in output.iter_mut().zip(stereo) {
+            *output = (left + right) * 0.5;
+        }
+        true
+    }
+}
+
+struct Mixer {
+    output_rate: u32,
+    gain: f32,
+    paused: bool,
+    streams: HashMap<u32, Vec<AudioStream>>,
+    hrtf: Option<HrtfProcessor>,
+}
+
+impl Mixer {
+    fn new(output_rate: u32) -> Self {
+        let hrtf = match HrirSphere::new(Cursor::new(HRIR_SPHERE), output_rate) {
+            Ok(sphere) => Some(HrtfProcessor::new(
+                sphere,
+                HRTF_INTERPOLATION_STEPS,
+                HRTF_BLOCK_LEN,
+            )),
+            Err(error) => {
+                tracing::warn!(?error, "cannot initialize HRTF; using stereo panning");
+                None
+            }
+        };
+
+        Self {
+            output_rate,
+            gain: 1.0,
+            paused: false,
+            streams: HashMap::new(),
+            hrtf,
+        }
+    }
+
+    fn handle(&mut self, command: Command) -> bool {
+        match command {
+            Command::Stream {
+                browser,
+                stream_id,
+                sample_rate,
+                spatial,
+            } => self
+                .streams
+                .entry(browser)
+                .or_default()
+                .push(AudioStream::new(stream_id, sample_rate, spatial)),
+            Command::Source { browser, object_id } => {
+                if let Some(streams) = self.streams.get_mut(&browser) {
+                    for stream in streams {
+                        stream
+                            .sources
+                            .entry(object_id)
+                            .or_insert_with(|| SpatialSource::new(object_id));
+                    }
+                }
+            }
+            Command::Pcm {
+                browser,
+                stream_id,
+                data,
+            } => {
+                if !self.paused
+                    && let Some(stream) = self
+                        .streams
+                        .get_mut(&browser)
+                        .and_then(|streams| streams.iter_mut().find(|s| s.stream_id == stream_id))
+                {
+                    stream.append(data);
+                }
+            }
+            Command::RemoveStream { browser, stream_id } => {
+                if let Some(streams) = self.streams.get_mut(&browser) {
+                    streams.retain(|stream| stream.stream_id != stream_id);
+                    if streams.is_empty() {
+                        self.streams.remove(&browser);
+                    }
+                }
+            }
+            Command::RemoveAllStreams { browser } => {
+                self.streams.remove(&browser);
+            }
+            Command::RemoveSource { browser, object_id } => {
+                if let Some(streams) = self.streams.get_mut(&browser) {
+                    for stream in streams {
+                        stream.sources.remove(&object_id);
+                    }
+                }
+            }
+            Command::ObjectSettings {
+                object_id,
+                position,
+                velocity,
+                settings,
+            } => self.for_object(object_id, |source| {
+                source.position = position;
+                source.velocity = velocity;
+                source.settings = settings;
+                source.muted = false;
+            }),
+            Command::Gain(gain) => self.gain = gain,
+            Command::MuteObject(object_id) => self.for_object(object_id, |source| {
+                source.muted = true;
+                source.reset_history();
+            }),
+            Command::TogglePause(paused) => self.set_paused(paused),
+            Command::Terminate => return false,
+        }
+        true
+    }
+
+    fn set_paused(&mut self, paused: bool) {
+        if self.paused == paused {
+            return;
+        }
+
+        self.paused = paused;
+        tracing::debug!(paused, "browser audio pause state changed");
+
+        if paused {
+            for streams in self.streams.values_mut() {
                 for stream in streams {
-                    stream.unqueue_buffers();
+                    stream.input.clear();
+                    stream.playing = false;
+                    stream.resample_phase = 0.0;
+                }
+            }
+        }
+    }
 
-                    let current_time = crate::utils::current_time();
+    fn for_object(&mut self, object_id: i32, mut callback: impl FnMut(&mut SpatialSource)) {
+        for streams in self.streams.values_mut() {
+            for stream in streams {
+                if let Some(source) = stream.sources.get_mut(&object_id) {
+                    callback(source);
+                }
+            }
+        }
+    }
 
-                    for (pts, pending) in stream.pending_pcm.iter() {
-                        let pts_big = *pts as i128;
-                        let delta = (pts_big - current_time).abs();
-                        let next_tick = stream.last_pts
-                            + ((stream.last_frame_len as f64 / stream.sample_rate as f64) * 1000.0)
-                                as u64;
+    fn render(&mut self) -> [(f32, f32); MIX_FRAMES] {
+        let mut output = [(0.0, 0.0); MIX_FRAMES];
+        if self.paused {
+            return output;
+        }
 
-                        // 2 ms
-                        let queue = if delta >= 0 && delta <= 2 {
-                            // should be immediatly played
-                            true
-                        } else if *pts == next_tick {
-                            // should be next
-                            true
-                        } else {
-                            // should wait
-                            break;
-                        };
-
-                        if queue {
-                            let sample_rate = stream.sample_rate;
-
-                            let success = stream
-                                .sources
-                                .values_mut()
-                                .fold(true, |acc, source| acc & source.queue(sample_rate, pending));
-
-                            if success {
-                                stream.last_pts = *pts;
-                                stream.last_frame_len = pending.len();
-                                continue;
-                            } else {
-                                break;
-                            }
-                        }
+        let mut mono = [0.0; MIX_FRAMES];
+        let mut stereo = [(0.0, 0.0); MIX_FRAMES];
+        for streams in self.streams.values_mut() {
+            for stream in streams {
+                if stream.spatial {
+                    if !stream.render_mono(self.output_rate, &mut mono) {
+                        continue;
                     }
 
-                    stream.play();
-
-                    let keys: Vec<u64> = stream
-                        .pending_pcm
-                        .range(0..=stream.last_pts)
-                        .map(|(pts, _)| *pts)
-                        .collect();
-
-                    for key in keys {
-                        stream.pending_pcm.remove(&key);
+                    for source in stream.sources.values_mut().filter(|source| !source.muted) {
+                        render_spatial_source(
+                            self.hrtf.as_mut(),
+                            source,
+                            &mono,
+                            &mut output,
+                            self.gain,
+                        );
+                    }
+                } else if stream.render_stereo(self.output_rate, &mut stereo) {
+                    for (output, (left, right)) in output.iter_mut().zip(stereo) {
+                        output.0 += left * self.gain;
+                        output.1 += right * self.gain;
                     }
                 }
             }
         }
+        output
+    }
+}
 
-        std::thread::sleep(std::time::Duration::from_micros(500));
+fn distance_gain(position: Point3<f32>, settings: BrowserAudioSettings) -> f32 {
+    let distance = position.coords.norm();
+    let reference = settings.reference_distance.max(0.0);
+    let maximum = settings.max_distance.max(reference + f32::EPSILON);
+    if distance <= reference {
+        1.0
+    } else if distance >= maximum {
+        0.0
+    } else {
+        (maximum - distance) / (maximum - reference)
+    }
+}
+
+fn source_direction(position: Point3<f32>) -> Vec3 {
+    let length_squared = position.coords.norm_squared();
+    if length_squared <= f32::EPSILON {
+        return Vec3::new(0.0, 0.0, 1.0);
+    }
+    let direction = -position.coords / length_squared.sqrt();
+    Vec3::new(direction.x, direction.y, direction.z)
+}
+
+fn render_spatial_source(
+    processor: Option<&mut HrtfProcessor>, source: &mut SpatialSource, mono: &[f32; MIX_FRAMES],
+    output: &mut [(f32, f32); MIX_FRAMES], master_gain: f32,
+) {
+    let direction = source_direction(source.position);
+    let gain = distance_gain(source.position, source.settings) * master_gain;
+    let hrtf_enabled = processor.is_some();
+
+    if !source.rendered_once {
+        tracing::info!(
+            object_id = source.object_id,
+            gain,
+            hrtf_enabled,
+            "first spatial block rendered"
+        );
+        source.rendered_once = true;
+    }
+
+    if let Some(processor) = processor {
+        processor.process_samples(HrtfContext {
+            source: mono,
+            output,
+            new_sample_vector: direction,
+            prev_sample_vector: source.previous_direction,
+            prev_left_samples: &mut source.previous_left,
+            prev_right_samples: &mut source.previous_right,
+            new_distance_gain: gain,
+            prev_distance_gain: source.previous_gain,
+        });
+    } else {
+        // Equal-power panning is kept as a graceful fallback for a corrupt HRIR asset.
+        let pan = direction.x.clamp(-1.0, 1.0);
+        let left_gain = ((1.0 - pan) * 0.5).sqrt() * gain;
+        let right_gain = ((1.0 + pan) * 0.5).sqrt() * gain;
+        for ((left, right), sample) in output.iter_mut().zip(mono) {
+            *left += *sample * left_gain;
+            *right += *sample * right_gain;
+        }
+    }
+
+    source.previous_direction = direction;
+    source.previous_gain = gain;
+}
+
+fn write_output<T>(data: &mut [T], channels: usize, output: &ArrayQueue<f32>)
+where
+    T: SizedSample + FromSample<f32>,
+{
+    for frame in data.chunks_mut(channels) {
+        let left = output.pop().unwrap_or(0.0).clamp(-1.0, 1.0);
+        let right = output.pop().unwrap_or(0.0).clamp(-1.0, 1.0);
+        if channels == 1 {
+            frame[0] = T::from_sample((left + right) * 0.5);
+        } else {
+            frame[0] = T::from_sample(left);
+            frame[1] = T::from_sample(right);
+            for sample in &mut frame[2..] {
+                *sample = T::from_sample(0.0);
+            }
+        }
+    }
+}
+
+fn build_output_stream(
+    device: &cpal::Device, config: cpal::StreamConfig, format: SampleFormat,
+    output: Arc<ArrayQueue<f32>>,
+) -> Result<cpal::Stream, cpal::Error> {
+    let channels = config.channels as usize;
+    let error_callback = |error| tracing::error!(%error, "audio output stream failed");
+
+    macro_rules! stream {
+        ($sample:ty) => {{
+            let output = Arc::clone(&output);
+            device.build_output_stream::<$sample, _, _>(
+                config,
+                move |data, _| write_output(data, channels, &output),
+                error_callback,
+                Some(Duration::from_secs(2)),
+            )
+        }};
+    }
+
+    match format {
+        SampleFormat::I8 => stream!(i8),
+        SampleFormat::I16 => stream!(i16),
+        SampleFormat::I32 => stream!(i32),
+        SampleFormat::I64 => stream!(i64),
+        SampleFormat::U8 => stream!(u8),
+        SampleFormat::U16 => stream!(u16),
+        SampleFormat::U32 => stream!(u32),
+        SampleFormat::U64 => stream!(u64),
+        SampleFormat::F32 => stream!(f32),
+        SampleFormat::F64 => stream!(f64),
+        _ => Err(cpal::Error::with_message(
+            cpal::ErrorKind::InvalidInput,
+            format!("unsupported output sample format: {format:?}"),
+        )),
+    }
+}
+
+fn audio_thread(command_rx: Receiver<Command>) {
+    let host = cpal::default_host();
+    let Some(device) = host.default_output_device() else {
+        tracing::error!("no default audio output device");
+        return;
+    };
+    let supported = match device.default_output_config() {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::error!(%error, "cannot query default audio output format");
+            return;
+        }
+    };
+    let config = supported.config();
+    if config.channels == 0 {
+        tracing::error!("default audio output has no channels");
+        return;
+    }
+
+    let output = Arc::new(ArrayQueue::new(OUTPUT_QUEUE_BLOCKS * MIX_FRAMES * 2));
+    let stream = match build_output_stream(
+        &device,
+        config,
+        supported.sample_format(),
+        Arc::clone(&output),
+    ) {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::error!(%error, "cannot open default audio output");
+            return;
+        }
+    };
+
+    let mut mixer = Mixer::new(config.sample_rate);
+    tracing::info!(
+        sample_rate = config.sample_rate,
+        channels = config.channels,
+        sample_format = ?supported.sample_format(),
+        hrtf_enabled = mixer.hrtf.is_some(),
+        "audio output initialized"
+    );
+
+    while output.len() < OUTPUT_TARGET_BLOCKS * MIX_FRAMES * 2 {
+        push_block(&output, mixer.render());
+    }
+    if let Err(error) = stream.play() {
+        tracing::error!(%error, "cannot start audio output");
+        return;
+    }
+
+    loop {
+        while let Ok(command) = command_rx.try_recv() {
+            if !mixer.handle(command) {
+                return;
+            }
+        }
+
+        mixer.set_paused(game_audio_should_pause());
+
+        while output.len() < OUTPUT_TARGET_BLOCKS * MIX_FRAMES * 2 {
+            push_block(&output, mixer.render());
+        }
+
+        match command_rx.recv_timeout(Duration::from_millis(2)) {
+            Ok(command) => {
+                if !mixer.handle(command) {
+                    return;
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+fn game_audio_should_pause() -> bool {
+    let hwnd = client_api::gta::hwnd();
+    if hwnd.is_null() {
+        return true;
+    }
+
+    let window_inactive = unsafe { IsIconic(hwnd) != 0 || GetForegroundWindow() != hwnd };
+    window_inactive || CMenuManager::is_menu_active()
+}
+
+fn push_block(output: &ArrayQueue<f32>, block: [(f32, f32); MIX_FRAMES]) {
+    for (left, right) in block {
+        if output.push(left).is_err() || output.push(right).is_err() {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attenuation_respects_reference_and_max_distance() {
+        let settings = BrowserAudioSettings {
+            reference_distance: 10.0,
+            max_distance: 30.0,
+        };
+        assert_eq!(distance_gain(Point3::new(0.0, 0.0, 5.0), settings), 1.0);
+        assert_eq!(distance_gain(Point3::new(0.0, 0.0, 30.0), settings), 0.0);
+        assert!((distance_gain(Point3::new(0.0, 0.0, 20.0), settings) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn streaming_resampler_produces_a_complete_block() {
+        let mut stream = AudioStream::new(1, 44_100, true);
+        stream.append(vec![(0.25, 0.25); 4_410]);
+        let mut output = [0.0; MIX_FRAMES];
+        assert!(stream.render_mono(48_000, &mut output));
+        assert!(output.iter().all(|sample| (*sample - 0.25).abs() < 1e-6));
+    }
+
+    #[test]
+    fn embedded_hrir_sphere_is_valid_at_common_device_rates() {
+        for sample_rate in [44_100, 48_000] {
+            let sphere = HrirSphere::new(Cursor::new(HRIR_SPHERE), sample_rate).unwrap();
+            let _processor = HrtfProcessor::new(sphere, HRTF_INTERPOLATION_STEPS, HRTF_BLOCK_LEN);
+        }
+    }
+
+    #[test]
+    fn pausing_mixer_discards_buffered_audio_and_renders_silence() {
+        let mut mixer = Mixer::new(48_000);
+        assert!(mixer.handle(Command::Stream {
+            browser: 1,
+            stream_id: 2,
+            sample_rate: 48_000,
+            spatial: false,
+        }));
+        assert!(mixer.handle(Command::Pcm {
+            browser: 1,
+            stream_id: 2,
+            data: vec![(0.5, 0.5); 4_800],
+        }));
+
+        mixer.set_paused(true);
+
+        let stream = &mixer.streams[&1][0];
+        assert!(stream.input.is_empty());
+        assert!(!stream.playing);
+        assert!(
+            mixer
+                .render()
+                .iter()
+                .all(|&(left, right)| left == 0.0 && right == 0.0)
+        );
+    }
+
+    #[test]
+    fn overlay_stream_preserves_stereo_channels() {
+        let mut mixer = Mixer::new(48_000);
+        assert!(mixer.handle(Command::Stream {
+            browser: 1,
+            stream_id: 2,
+            sample_rate: 48_000,
+            spatial: false,
+        }));
+        assert!(mixer.handle(Command::Pcm {
+            browser: 1,
+            stream_id: 2,
+            data: vec![(0.25, -0.5); 4_800],
+        }));
+
+        let output = mixer.render();
+        assert!(
+            output
+                .iter()
+                .all(|&(left, right)| { (left - 0.25).abs() < 1e-6 && (right + 0.5).abs() < 1e-6 })
+        );
     }
 }

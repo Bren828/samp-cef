@@ -189,7 +189,7 @@ pub unsafe fn register_custom_scheme(registrar: *mut cef_scheme_registrar_t) {
     let result = unsafe {
         cef::scheme::register_custom_scheme(registrar, ASSET_SCHEME, ASSET_SCHEME_OPTIONS)
     };
-    log::trace!("register_custom_scheme => {}", result);
+    tracing::debug!(registered = result, "CEF asset scheme registered");
 }
 
 pub fn register_scheme_handler_factory() {
@@ -206,7 +206,7 @@ pub fn register_scheme_handler_factory() {
     };
 
     if result == 0 {
-        log::error!("failed to register asset scheme handler factory");
+        tracing::error!("cannot register CEF asset scheme handler");
     }
 }
 
@@ -219,7 +219,7 @@ pub fn resolve_browser_url(value: &str) -> String {
     if let Some((local_path, query, fragment)) = parse_file_url(value) {
         return file_path_to_asset_url(&local_path, query.as_deref(), fragment.as_deref())
             .unwrap_or_else(|| {
-                log::warn!("blocked file URL outside assets root: {}", value);
+                tracing::warn!(url = %value, "blocked file URL outside assets directory");
                 BLANK_URL.to_string()
             });
     }
@@ -227,7 +227,7 @@ pub fn resolve_browser_url(value: &str) -> String {
     if let Some((query, fragment, path)) = parse_local_path_input(value) {
         return file_path_to_asset_url(&path, query.as_deref(), fragment.as_deref())
             .unwrap_or_else(|| {
-                log::warn!("blocked local path outside assets root: {}", value);
+                tracing::warn!(path = %value, "blocked local path outside assets directory");
                 BLANK_URL.to_string()
             });
     }
@@ -345,12 +345,12 @@ extern "system" fn resource_get_response_headers(
         }
     }
 
-    log::trace!(
-        "asset response: status={} mime_type={} charset={} length={}",
-        obj.interface.status_code,
-        obj.interface.mime_type,
-        obj.interface.charset,
-        obj.interface.body.len()
+    tracing::trace!(
+        status = obj.interface.status_code,
+        mime_type = %obj.interface.mime_type,
+        charset = %obj.interface.charset,
+        bytes = obj.interface.body.len(),
+        "asset response prepared"
     );
 }
 

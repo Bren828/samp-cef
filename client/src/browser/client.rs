@@ -80,7 +80,7 @@ pub struct WebClient {
     pub view: Mutex<View>,
     draw_data: Mutex<DrawData>,
     browser: Mutex<Option<Browser>>,
-    audio: Option<Arc<Audio>>, // static
+    audio: Arc<Audio>, // static
     event_tx: Sender<Event>,
     callbacks: CallbackList,
     object_list: Mutex<HashSet<i32>>,
@@ -105,13 +105,13 @@ impl LifespanHandler for WebClientRef {
 
         let hidden = self.0.hidden.load(Ordering::SeqCst);
 
-        log::trace!("LifespanHandler::on_after_created. hidden: {}", hidden);
+        tracing::debug!(browser = self.0.id, hidden, "CEF browser instance created");
 
         self.0.hide(hidden);
     }
 
     fn on_before_close(&self, _: Browser) {
-        log::trace!("LifespanHandler::on_before_close");
+        tracing::debug!(browser = self.0.id, "CEF browser instance is closing");
 
         let mut browser = self.0.browser.lock();
         // CEF owns the final browser teardown at this point. Calling back into
@@ -147,11 +147,7 @@ impl Client for WebClientRef {
     }
 
     fn audio_handler(&self) -> Option<Self> {
-        if self.0.is_extern {
-            Some(self.clone())
-        } else {
-            None
-        }
+        Some(self.clone())
     }
 
     fn permission_handler(&self) -> Option<Self> {
@@ -163,10 +159,10 @@ impl Client for WebClientRef {
     ) -> bool {
         let name = msg.name().to_string();
 
-        log::trace!(
-            "WebClient::on_process_message. browser_id: {}, message: {:?}",
-            self.0.id,
-            name
+        tracing::trace!(
+            browser = self.0.id,
+            message = %name,
+            "renderer message received"
         );
 
         match name.as_str() {
@@ -378,10 +374,10 @@ impl RenderHandler for WebClientRef {
 
 impl LoadHandler for WebClientRef {
     fn on_load_end(&self, _browser: Browser, frame: Frame, status_code: i32) {
-        log::trace!(
-            "LoadHandler::on_load_end. id: {} status: {}",
-            self.0.id,
-            status_code
+        tracing::trace!(
+            browser = self.0.id,
+            status = status_code,
+            "browser load completed"
         );
 
         if frame.is_main() {
@@ -393,11 +389,11 @@ impl LoadHandler for WebClientRef {
 
 impl AudioHandler for WebClientRef {
     fn get_audio_parameters(&self, _browser: Browser, params: &mut cef_audio_parameters_t) -> bool {
-        log::trace!(
-            "get_audio_parameters: {} {} {}",
-            params.sample_rate,
-            params.channel_layout,
-            params.frames_per_buffer
+        tracing::trace!(
+            sample_rate = params.sample_rate,
+            channel_layout = params.channel_layout,
+            frames_per_buffer = params.frames_per_buffer,
+            "configuring browser audio stream"
         );
 
         true
@@ -407,10 +403,10 @@ impl AudioHandler for WebClientRef {
     fn on_audio_stream_packet(
         &self, _browser: Browser, stream_id: i32, data: *mut *const f32, frames: i32, pts: i64,
     ) {
-        if let Some(audio) = self.0.audio.as_ref() {
-            unsafe {
-                audio.append_pcm(self.0.id, stream_id, data, frames, pts as u64);
-            }
+        unsafe {
+            self.0
+                .audio
+                .append_pcm(self.0.id, stream_id, data, frames, pts as u64);
         }
     }
 
@@ -418,39 +414,44 @@ impl AudioHandler for WebClientRef {
         &self, _browser: Browser, stream_id: i32, channels: i32, _channel_layout: i32,
         sample_rate: i32, frames_per_buffer: i32,
     ) {
-        if let Some(audio) = self.0.audio.as_ref() {
-            audio.create_stream(
-                self.0.id,
-                stream_id,
-                channels,
-                sample_rate,
-                frames_per_buffer,
-            );
+        self.0.audio.create_stream(
+            self.0.id,
+            stream_id,
+            channels,
+            sample_rate,
+            frames_per_buffer,
+            self.0.is_extern,
+        );
+        if self.0.is_extern {
             let objects = self.0.object_list.lock();
 
             for &object_id in objects.iter() {
-                audio.add_source(self.0.id, object_id);
+                self.0.audio.add_source(self.0.id, object_id);
             }
         }
     }
 
     fn on_audio_stream_stopped(&self, _browser: Browser, stream_id: i32) {
-        if let Some(audio) = self.0.audio.as_ref() {
-            audio.remove_stream(self.0.id, stream_id);
-        }
+        self.0.audio.remove_stream(self.0.id, stream_id);
     }
 
     fn on_audio_stream_error(&self, _browser: Browser, error: String) {
-        log::trace!("on_audio_stream_error: {:?}", error);
+        tracing::error!(browser = self.0.id, error = %error, "browser audio stream failed");
     }
 }
 
 impl WebClient {
     #[allow(clippy::arc_with_non_send_sync)]
-    pub fn new(id: u32, cbs: CallbackList, event_tx: Sender<Event>) -> Arc<WebClient> {
+    pub fn new(
+        id: u32, cbs: CallbackList, event_tx: Sender<Event>, audio: Arc<Audio>,
+    ) -> Arc<WebClient> {
         let rect = crate::utils::client_rect();
 
-        log::trace!("crate::utils::client_rect: {:?}", rect);
+        tracing::trace!(
+            width = rect[0],
+            height = rect[1],
+            "client viewport detected"
+        );
 
         let mut view = View::new();
         view.make_display(rect[0], rect[1]);
@@ -466,7 +467,7 @@ impl WebClient {
             callbacks: cbs,
             object_list: Mutex::new(HashSet::new()),
             is_extern: false,
-            audio: None,
+            audio,
             event_tx,
             id,
             rendered: (Mutex::new(0), Condvar::new()),
@@ -492,7 +493,7 @@ impl WebClient {
             callbacks: cbs,
             object_list: Mutex::new(HashSet::new()),
             is_extern: true,
-            audio: Some(audio),
+            audio,
             event_tx,
             id,
             rendered: (Mutex::new(0), Condvar::new()),

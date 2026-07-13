@@ -1,14 +1,14 @@
 
 ## File structure
-- The `cef.asi` should be in the game root folder (builded as `loader.dll`).
+- The `cef.asi` should be in the game root folder (built as `cef_loader.dll`).
 - Also `cef` folder should be placed there.
 - There is a `CEF` dir at `Documents/GTA San Andreas User Files/CEF/`, where is Chromium cookies, caches and so on.
 - `gta_sa.exe`
 - `cef.asi`
 - `cef/`
-    - `client.dll`
+    - `cef-client.dll`
     - `libcef.dll`
-    - `renderer.exe`
+    - `cef-renderer.exe`
     - etc …
 
 ## Build notes

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(samp-cef-openmp-component LANGUAGES CXX)
+project(cef-openmp-component LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,7 +16,7 @@ set(SAMP_CEF_ENABLE_GRPC_EXT "OFF" CACHE STRING "Enable openmp-ext gRPC integrat
 set_property(CACHE SAMP_CEF_ENABLE_GRPC_EXT PROPERTY STRINGS AUTO ON OFF)
 set(OPEN_MP_SERVER_ROOT "$ENV{OPEN_MP_SERVER_ROOT}" CACHE PATH "Optional open.mp server root used by the install target")
 set(SAMP_CEF_INSTALL_COMPONENT_DIR "" CACHE PATH "Directory where open.mp component binaries are installed")
-set(SAMP_CEF_INSTALL_COMPONENT_NAME "samp-cef-openmp" CACHE STRING "CMake install component used for CEF open.mp artifacts")
+set(SAMP_CEF_INSTALL_COMPONENT_NAME "cef-openmp" CACHE STRING "CMake install component used for CEF open.mp artifacts")
 set(SAMP_CEF_INSTALL_GRPC_EXT ON CACHE BOOL "Install omp-grpc next to cef when gRPC integration is enabled")
 
 if(NOT EXISTS "${OPEN_MP_ROOT}/SDK/CMakeLists.txt")
@@ -32,7 +32,7 @@ set(SAMP_CEF_RUST_TARGET "" CACHE STRING "Optional Cargo target triple for the R
 set(SAMP_CEF_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/cargo-target" CACHE PATH "Cargo target directory")
 set(RUST_MANIFEST "${SAMP_CEF_ROOT}/openmp-component/Cargo.toml")
 set(GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
-set(GENERATED_CXXBRIDGE_HEADER "${GENERATED_INCLUDE_DIR}/samp-cef-openmp/src/lib.rs.h")
+set(GENERATED_CXXBRIDGE_HEADER "${GENERATED_INCLUDE_DIR}/cef-openmp/src/lib.rs.h")
 
 set(CARGO_BUILD_ARGS build --release --manifest-path "${RUST_MANIFEST}")
 if(SAMP_CEF_RUST_TARGET)
@@ -43,9 +43,9 @@ else()
 endif()
 
 if(WIN32)
-	set(RUST_STATIC_LIB "${RUST_LIB_DIR}/samp_cef_openmp.lib")
+	set(RUST_STATIC_LIB "${RUST_LIB_DIR}/cef_openmp.lib")
 else()
-	set(RUST_STATIC_LIB "${RUST_LIB_DIR}/libsamp_cef_openmp.a")
+	set(RUST_STATIC_LIB "${RUST_LIB_DIR}/libcef_openmp.a")
 endif()
 
 add_custom_command(
@@ -74,7 +74,7 @@ add_custom_command(
 	VERBATIM
 )
 
-add_custom_target(samp_cef_openmp_rust DEPENDS "${RUST_STATIC_LIB}" "${GENERATED_CXXBRIDGE_HEADER}")
+add_custom_target(cef_openmp_rust DEPENDS "${RUST_STATIC_LIB}" "${GENERATED_CXXBRIDGE_HEADER}")
 
 add_library(cef SHARED
 	src/component.cpp
@@ -82,7 +82,7 @@ add_library(cef SHARED
 
 set(SAMP_CEF_GRPC_EXT_ENABLED FALSE)
 
-add_dependencies(cef samp_cef_openmp_rust)
+add_dependencies(cef cef_openmp_rust)
 
 target_include_directories(cef PRIVATE
 	"${GENERATED_INCLUDE_DIR}"

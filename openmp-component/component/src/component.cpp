@@ -1,4 +1,4 @@
-#include "samp-cef-openmp/src/lib.rs.h"
+#include "cef-openmp/src/lib.rs.h"
 
 #ifndef SAMP_CEF_HAS_GRPC_EXT
 #define SAMP_CEF_HAS_GRPC_EXT 0

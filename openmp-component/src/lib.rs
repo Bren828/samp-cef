@@ -1,7 +1,51 @@
 use std::borrow::Cow;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Once;
 
 use server_core::{CoreEvent, EventValue, ServerCore as InnerServerCore};
+use tracing_subscriber::filter::{LevelFilter, Targets};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+static TRACING_INIT: Once = Once::new();
+const LOG_LEVEL_ENV: &str = "SAMP_CEF_LOG_LEVEL";
+
+fn server_log_level() -> (LevelFilter, Option<String>) {
+    let Ok(value) = std::env::var(LOG_LEVEL_ENV) else {
+        return (LevelFilter::INFO, None);
+    };
+
+    match value.trim().to_ascii_lowercase().parse::<LevelFilter>() {
+        Ok(level) => (level, None),
+        Err(_) => (LevelFilter::INFO, Some(value)),
+    }
+}
+
+fn initialize_tracing() {
+    TRACING_INIT.call_once(|| {
+        let (log_level, invalid_log_level) = server_log_level();
+        let filter = Targets::new()
+            .with_default(LevelFilter::WARN)
+            .with_target("cef_openmp", log_level)
+            .with_target("cef_server_core", log_level);
+        let format = tracing_subscriber::fmt::layer().compact().with_ansi(false);
+        if tracing_subscriber::registry()
+            .with(filter)
+            .with(format)
+            .try_init()
+            .is_ok()
+        {
+            tracing::info!(level = %log_level, "server logging initialized");
+            if let Some(value) = invalid_log_level {
+                tracing::warn!(
+                    value,
+                    environment = LOG_LEVEL_ENV,
+                    "unknown server log level; using info"
+                );
+            }
+        }
+    });
+}
 
 #[cxx::bridge(namespace = "samp_cef::openmp")]
 mod ffi {
@@ -75,6 +119,8 @@ pub struct EventArguments {
 }
 
 fn create_server_core(bind: &str, port: u16) -> Box<ServerCore> {
+    initialize_tracing();
+
     let bind = if bind.is_empty() { "0.0.0.0" } else { bind };
     let ip = match bind.parse::<IpAddr>() {
         Ok(ip) => ip,

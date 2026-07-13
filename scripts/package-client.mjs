@@ -74,9 +74,10 @@ if (installedManifest.cefVersion !== manifest.cefVersion || installedManifest.sh
 }
 
 const inputs = [
-  [path.join(targetDir, "loader.dll"), path.join(outputDir, "cef.asi")],
-  [path.join(targetDir, "client.dll"), path.join(cefOutputDir, "client.dll")],
-  [path.join(targetDir, "renderer.exe"), path.join(cefOutputDir, "renderer.exe")],
+  [path.join(targetDir, "cef_loader.dll"), path.join(outputDir, "cef.asi")],
+  [path.join(targetDir, "cef_client.dll"), path.join(cefOutputDir, "cef-client.dll")],
+  [path.join(targetDir, "cef-renderer.exe"), path.join(cefOutputDir, "cef-renderer.exe")],
+  [path.join(rootDir, "client", "config.json"), path.join(cefOutputDir, "config.json")],
   ...releaseFiles.map((name) => [path.join(cefRoot, "Release", name), path.join(cefOutputDir, name)]),
   ...resourceFiles.map((name) => [path.join(cefRoot, "Resources", name), path.join(cefOutputDir, name)]),
   [path.join(cefRoot, "LICENSE.txt"), path.join(cefOutputDir, "LICENSE.txt")],

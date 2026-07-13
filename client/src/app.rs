@@ -104,7 +104,7 @@ pub struct App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        log::trace!("App::drop");
+        tracing::debug!("shutting down client");
 
         {
             let mut manager = self.manager.lock();
@@ -128,19 +128,11 @@ impl Default for App {
 impl App {
     #[allow(clippy::arc_with_non_send_sync)]
     pub fn new() -> App {
-        log::trace!("App::new()");
-
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
-
-        log::trace!("Audio::new()");
 
         let audio = Audio::new();
 
-        log::trace!("Manager::new()");
-
         let manager = Arc::new(Mutex::new(Manager::new(event_tx.clone(), audio.clone())));
-
-        log::trace!("crate::external::initialize");
 
         let callbacks = crate::external::initialize(event_tx.clone(), manager.clone());
 
@@ -178,8 +170,7 @@ impl App {
     }
 
     pub fn initialize_hooks() {
-        log::trace!("App::initialize_hooks()");
-        log::trace!("Trying to hook WndProc.");
+        tracing::debug!("initializing SA:MP hooks");
 
         // apply hook to WndProc
         while !wndproc::initialize(&wndproc::WndProcSettings {
@@ -189,14 +180,10 @@ impl App {
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        log::trace!("Append WndProc callback.");
-
         client_api::wndproc::append_callback(win_event);
 
-        log::trace!("Hooking destroy functions.");
-
         NetGame::on_destroy(|| {
-            log::trace!("NetGame::on_destroy calling unitialize");
+            tracing::debug!("SA:MP session is shutting down");
             uninitialize();
         });
 
@@ -211,11 +198,11 @@ impl App {
         });
 
         client_api::gta::game::on_shutdown(|| {
-            log::trace!("gta::game::on_shutdown calling unitialize");
+            tracing::debug!("GTA is shutting down");
             uninitialize();
         });
 
-        log::trace!("Initialize done.");
+        tracing::debug!("SA:MP hooks initialized");
     }
 
     pub fn connect(&mut self) {
@@ -235,17 +222,15 @@ impl App {
                 self.manager.lock().initialize_cef();
             }
 
-            log::trace!("SAMP: CNetGame address: {}", addr);
+            tracing::debug!(game_server = %addr, "SA:MP server detected");
 
             addr.set_port(addr.port() + CEF_SERVER_PORT_OFFSET);
 
-            log::trace!(
-                "Event::Connect({}). Elapsed {:?}",
-                addr,
-                self.initialization.elapsed()
+            tracing::trace!(
+                server = %addr,
+                elapsed_ms = self.initialization.elapsed().as_millis(),
+                "queuing CEF server connection"
             );
-
-            log::trace!("NetworkClient::new");
 
             let network = NetworkClient::new(self.event_tx.clone());
             network.send(Event::Connect(addr));
@@ -256,8 +241,7 @@ impl App {
     }
 
     pub fn disconnect(&mut self) {
-        // disconnected
-        log::trace!("App::disconnect");
+        tracing::info!("disconnected from CEF server");
 
         self.reset_connection(true);
     }
@@ -294,13 +278,8 @@ impl App {
 }
 
 pub fn initialize() {
-    log::trace!("app::initialize()");
-    log::trace!("App::new() ->");
-
     let app = App::new();
     let manager = app.manager();
-
-    log::trace!("CEF: crate::render::initalize()");
 
     crate::render::initialize(manager);
 
@@ -309,7 +288,7 @@ pub fn initialize() {
     }
 
     if client_api::samp::version::is_unknown_version() {
-        log::error!("unknown samp version");
+        tracing::error!("unsupported SA:MP version detected");
 
         client_api::utils::error_message_box(
             "Unsupported SA:MP",
@@ -317,25 +296,20 @@ pub fn initialize() {
         );
 
         // don't waste time
+    } else {
+        tracing::info!("client initialized");
     }
 }
 
 pub fn uninitialize() {
     static DESTROY: Once = Once::new();
 
-    log::trace!("app::uninitialize()");
-
-    DESTROY.call_once(|| {
-        log::trace!("app::uninitialize call once ->");
-        unsafe {
-            APP.take();
-        }
+    DESTROY.call_once(|| unsafe {
+        APP.take();
     });
 }
 
 fn quit() {
-    log::trace!("app::quit()");
-
     crate::external::quit();
     crate::render::uninitialize();
 
@@ -345,7 +319,10 @@ fn quit() {
 fn shitty() {
     if let Some(app) = App::get() {
         if !app.samp_ready {
-            log::trace!("SAMP init within {:?}", app.initialization.elapsed());
+            tracing::info!(
+                elapsed_ms = app.initialization.elapsed().as_millis(),
+                "SA:MP initialized"
+            );
             app.samp_ready = true;
             app.manager.lock().initialize_cef();
         } else if !app.window_focused {
@@ -397,10 +374,12 @@ pub fn mainloop() {
                     hidden,
                     focused,
                 } => {
-                    log::trace!(
-                        "Request to create browser view with id: {}. URL: {}",
-                        id,
-                        url
+                    tracing::trace!(
+                        browser = id,
+                        url = %url,
+                        hidden,
+                        focused,
+                        "browser creation requested"
                     );
 
                     let show_cursor = {
@@ -416,10 +395,11 @@ pub fn mainloop() {
                 }
 
                 Event::CreateExternBrowser(ext) => {
-                    log::trace!(
-                        "Request from server to create external browser with id {}. Texture name: {}",
-                        ext.id,
-                        ext.texture
+                    tracing::trace!(
+                        browser = ext.id,
+                        texture = %ext.texture,
+                        scale = ext.scale,
+                        "object browser creation requested"
                     );
                     let mut manager = app.manager.lock();
 
@@ -459,12 +439,7 @@ pub fn mainloop() {
                 }
 
                 Event::BrowserCreated(id, code) => {
-                    log::trace!(
-                        "Browser {} created. Status code: {}. Network available? {}",
-                        id,
-                        code,
-                        app.network.is_some()
-                    );
+                    tracing::info!(browser = id, status = code, "browser created");
 
                     if let Some(network) = app.network.as_mut() {
                         let event = Event::BrowserCreated(id, code);
@@ -475,7 +450,10 @@ pub fn mainloop() {
                 }
 
                 Event::CefInitialize => {
-                    log::trace!("Initialized. Elapsed: {:?}", app.initialization.elapsed());
+                    tracing::info!(
+                        elapsed_ms = app.initialization.elapsed().as_millis(),
+                        "CEF initialized"
+                    );
 
                     app.cef_ready = true;
                     crate::external::call_initialize();
@@ -500,11 +478,12 @@ pub fn mainloop() {
                     app.connected = true;
                     app.bad_version_notified = false;
                     app.reset_connect_backoff();
+                    tracing::info!("connected to CEF server");
                     crate::external::call_connect();
                 }
 
                 Event::BadVersion => {
-                    log::trace!("CEF Network: BadVersion");
+                    tracing::warn!("CEF client and server versions are incompatible");
                     if !app.bad_version_notified {
                         app.bad_version_notified = true;
                         client_api::utils::error_message_box(
@@ -518,14 +497,14 @@ pub fn mainloop() {
                 }
 
                 Event::NetworkError => {
-                    log::trace!("CEF Network: NetworkError");
+                    tracing::warn!("CEF network is unavailable; connection will be retried");
                     let notify_disconnect = app.connected;
                     app.reset_connection(notify_disconnect);
                     app.bump_connect_backoff();
                 }
 
                 Event::Timeout => {
-                    log::trace!("CEF Network: Timeout");
+                    tracing::debug!("CEF server connection timed out; connection will be retried");
                     let notify_disconnect = app.connected;
                     app.reset_connection(notify_disconnect);
                     app.bump_connect_backoff();
@@ -682,12 +661,17 @@ fn win_event(msg: UINT, wparam: WPARAM, lparam: LPARAM) -> bool {
                 }
             }
 
-            WM_ACTIVATE => {
-                let status = (wparam & 0xFFFF) as u16;
-                let active = status != WA_INACTIVE;
+            WM_ACTIVATE | WM_ACTIVATEAPP => {
+                let active = if msg == WM_ACTIVATEAPP {
+                    wparam != 0
+                } else {
+                    (wparam & 0xFFFF) as u16 != WA_INACTIVE
+                };
 
                 crate::external::window_active(active);
                 app.window_focused = active;
+                app.audio
+                    .set_paused(!active || CMenuManager::is_menu_active());
                 manager.set_corrupted(!active);
                 manager.do_not_draw(!active);
 

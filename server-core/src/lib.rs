@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
-use log::trace;
+use tracing::trace;
 
 mod client;
 mod server;

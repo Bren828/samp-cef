@@ -1,5 +1,5 @@
 [package]
-name = "client"
+name = "cef-client"
 version = "0.1.0"
 authors = ["ZOTTCE <zottce@gmail.com>"]
 edition = "2024"
@@ -9,8 +9,7 @@ rust-version = "1.93"
 crate-type = ["cdylib"]
 
 [features]
-default = ["rodio_audio"]
-rodio_audio = []
+default = []
 crash_logger = ["winapi/processthreadsapi", "winapi/psapi", "winapi/excpt"]
 
 [dependencies]
@@ -19,20 +18,22 @@ client-api = { git = "https://github.com/zottce/samp-client-api.git", rev = "5e3
 cef = { path = "../cef" }
 cef-sys = { path = "../cef-sys" }
 crossbeam-channel = "0.5.15"
+crossbeam-queue = "0.3.12"
+cpal = "0.18.1"
 winapi = { version = "0.3.9", features = ["d3d9", "winuser", "libloaderapi", "winver", "consoleapi", "memoryapi", "shlobj", "synchapi", "errhandlingapi", "handleapi", "winerror"] }
-messages = { path = "../messages" }
+messages = { path = "../messages", package = "cef-messages" }
 quick-protobuf = "0.8.1"
 retour = { version = "0.4.0-alpha.4", features = ["thiscall-abi"] }
 libloading = "0.9.0"
-alto = "3.0.4"
-log = "0.4.29"
-simplelog = "0.12.2"
-ambisonic = "0.4.1"
+hrtf = "0.8.1"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "smallvec", "tracing-log"] }
 nalgebra = "0.34.1"
 parking_lot = "0.12.5"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-net = { path = "../network", package = "network" }
+net = { path = "../network", package = "cef-network" }
 region = "3.0.2"
 percent-encoding = "2.3.2"
 url = "2.5.7"

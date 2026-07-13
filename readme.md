@@ -34,8 +34,8 @@ Download the `cef.zip` artifact from [GitHub Actions](https://github.com/zottce/
 gta_sa.exe
 cef.asi
 cef/
-  client.dll
-  renderer.exe
+  cef-client.dll
+  cef-renderer.exe
   libcef.dll
   chrome_elf.dll
   locales/
@@ -43,7 +43,11 @@ cef/
   ...
 ```
 
-Keep the complete `cef/` directory from the package. CEF 150 requires more runtime files than the old CEF 89 client, so copying only `libcef.dll`, `client.dll`, and `renderer.exe` is not sufficient.
+Keep the complete `cef/` directory from the package. CEF 150 requires more runtime files than the old CEF 89 client, so copying only `libcef.dll`, `cef-client.dll`, and `cef-renderer.exe` is not sufficient.
+
+Client logging is configured in `<GTA>/cef/config.json`. The `log_level` field accepts `off`, `error`, `warn`, `info`, `debug`, or `trace` and defaults to `info`. Client events are written to `<GTA>/cef_client.log`.
+
+Server logging also defaults to `info`. Set the `SAMP_CEF_LOG_LEVEL` environment variable to `off`, `error`, `warn`, `info`, `debug`, or `trace` before starting a legacy SA:MP or open.mp server to override it.
 
 Local pages belong in `<GTA>/cef/assets/`. Browser cache, cookies, logs, and per-instance data are stored under `<GTA>/cef/user_data/`.
 
@@ -67,7 +71,7 @@ node scripts/download-cef.mjs --output third_party/cef
 $env:CEF_PATH = (Resolve-Path third_party/cef).Path
 
 cargo build --release --target i686-pc-windows-msvc `
-  -p client -p renderer -p loader
+  -p cef-client -p cef-renderer -p cef-loader
 
 node scripts/package-client.mjs --cef $env:CEF_PATH --output redist
 ```
@@ -111,13 +115,14 @@ The fixture in [examples/cef150-smoke](examples/cef150-smoke/README.md) verifies
 
 - `cef-sys` — generated Windows x86 CEF C API bindings.
 - `cef` — safe and ref-counted Rust wrappers around the CEF C API.
-- `client` — the injected SA:MP client plugin.
-- `renderer` — the CEF renderer subprocess.
-- `loader` — the ASI loader, packaged as `cef.asi`.
+- `cef-client` — the injected SA:MP client plugin.
+- `cef-renderer` — the CEF renderer subprocess.
+- `cef-loader` — the ASI loader, packaged as `cef.asi`.
 - `cef-api` — API used by third-party client plugins.
 - `cef-interface` — example client-side interface plugin.
-- `messages`, `network` — protocol messages and transport.
-- `server`, `server-core` — legacy SA:MP server plugin implementation.
+- `cef-messages`, `cef-network` — protocol messages and transport.
+- `cef-server`, `cef-server-core` — legacy SA:MP server plugin implementation.
+- `cef-openmp` — native open.mp component bridge.
 - `openmp-component` — native open.mp component.
 
 ## Server builds
@@ -125,7 +130,7 @@ The fixture in [examples/cef150-smoke](examples/cef150-smoke/README.md) verifies
 Build only the server target appropriate for the host. Building the entire workspace on Linux also selects Windows-only crates.
 
 ```sh
-cargo build --release --package server --target i686-unknown-linux-gnu
+cargo build --release --package cef-server --target i686-unknown-linux-gnu
 ```
 
 For open.mp, use:

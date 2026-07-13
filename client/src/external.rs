@@ -147,10 +147,14 @@ pub fn initialize(event_tx: Sender<Event>, manager: Arc<Mutex<Manager>>) -> Call
 
                             external.plugins.push(plugin);
 
-                            log::trace!("loaded plugin: {:?}", dir.path());
+                            tracing::info!(path = %dir.path().display(), "client plugin loaded");
                         }
 
-                        Err(e) => log::trace!("error loading library {:?}", e),
+                        Err(error) => tracing::warn!(
+                            path = %dir.path().display(),
+                            %error,
+                            "cannot load client plugin"
+                        ),
                     }
                 }
             }
