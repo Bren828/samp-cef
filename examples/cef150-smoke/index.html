@@ -28,8 +28,9 @@
     <input id="typing" placeholder="Keyboard input test">
     <button id="emit">Show object texture</button>
     <button id="focus">Release focus</button>
+    <button id="double-click">Double-click test</button>
     <div id="pulse" title="OSR animation"></div>
-    <video id="webm" controls autoplay loop src="bear-vp9-opus.webm"></video>
+    <video id="webm" controls autoplay loop muted src="bear-vp9-opus.webm"></video>
     <video id="h264" hidden src="bear-h264-aac.mp4"></video>
   </main>
   <script>
@@ -80,6 +81,9 @@
 
     document.getElementById("emit").addEventListener("click", () => cef?.emit("smoke:client", "button"));
     document.getElementById("focus").addEventListener("click", () => cef?.set_focus(false));
+    const doubleClick = document.getElementById("double-click");
+    report("Double-click", false, "pending");
+    doubleClick.addEventListener("dblclick", (event) => report("Double-click", true, `detail=${event.detail}`));
     document.getElementById("typing").addEventListener("input", (event) => report("Keyboard input", true, event.target.value));
   </script>
 </body>

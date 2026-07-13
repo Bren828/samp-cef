@@ -86,9 +86,7 @@ impl Socket {
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
-        runtime.block_on(async move {
-            tokio::spawn(worker_task(endpoint, cmd_rx, event_tx, is_listening));
-        });
+        runtime.spawn(worker_task(endpoint, cmd_rx, event_tx, is_listening));
 
         Self {
             _runtime: runtime,
@@ -155,6 +153,19 @@ impl Socket {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_socket_starts_without_an_external_async_runtime() {
+        let address = "127.0.0.1:0".parse().unwrap();
+        let socket = Socket::new_server(address, CertStrategy::SelfSigned);
+
+        assert!(socket.is_ok(), "server socket failed: {:?}", socket.err());
     }
 }
 

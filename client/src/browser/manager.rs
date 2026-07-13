@@ -10,6 +10,9 @@ use cef_sys::{cef_event_flags_t, cef_key_event_t, cef_mouse_button_type_t, cef_m
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use winapi::um::winuser::{GetDoubleClickTime, GetSystemMetrics, SM_CXDOUBLECLK, SM_CYDOUBLECLK};
 
 use client_api::gta::rw::rwcore::RwTexture;
 use client_api::gta::rw::rwplcore::RwSurfaceProperties;
@@ -23,11 +26,59 @@ pub enum MouseKey {
     Right,
 }
 
+#[derive(Debug, Clone)]
+struct ClickSequence {
+    button: MouseKey,
+    x: i32,
+    y: i32,
+    count: i32,
+    pressed_at: Instant,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Mouse {
     x: i32,
     y: i32,
     keys: HashMap<MouseKey, bool>,
+    last_click: Option<ClickSequence>,
+}
+
+impl Mouse {
+    fn click_count(
+        &mut self, button: MouseKey, is_down: bool, now: Instant, max_interval: Duration,
+        max_delta_x: i32, max_delta_y: i32,
+    ) -> i32 {
+        if !is_down {
+            return self
+                .last_click
+                .as_ref()
+                .filter(|click| click.button == button)
+                .map(|click| click.count)
+                .unwrap_or(1);
+        }
+
+        let count = self
+            .last_click
+            .as_ref()
+            .filter(|click| {
+                click.button == button
+                    && now.duration_since(click.pressed_at) <= max_interval
+                    && (self.x - click.x).abs() <= max_delta_x
+                    && (self.y - click.y).abs() <= max_delta_y
+            })
+            .map(|click| click.count.saturating_add(1))
+            .unwrap_or(1);
+
+        self.last_click = Some(ClickSequence {
+            button,
+            x: self.x,
+            y: self.y,
+            count,
+            pressed_at: now,
+        });
+
+        count
+    }
 }
 
 #[derive(Clone)]
@@ -71,7 +122,12 @@ impl Manager {
         keys.insert(MouseKey::Middle, false);
         keys.insert(MouseKey::Right, false);
 
-        let mouse = Mouse { x: 0, y: 0, keys };
+        let mouse = Mouse {
+            x: 0,
+            y: 0,
+            keys,
+            last_click: None,
+        };
 
         Manager {
             clients: HashMap::new(),
@@ -353,7 +409,19 @@ impl Manager {
                 MouseKey::Right => cef_mouse_button_type_t::MBT_RIGHT,
             };
 
-            host.send_mouse_click(key, event, is_down);
+            let double_click_time = unsafe { GetDoubleClickTime() };
+            let double_click_width = unsafe { GetSystemMetrics(SM_CXDOUBLECLK) };
+            let double_click_height = unsafe { GetSystemMetrics(SM_CYDOUBLECLK) };
+            let click_count = self.mouse.click_count(
+                button,
+                is_down,
+                Instant::now(),
+                Duration::from_millis(double_click_time.into()),
+                (double_click_width / 2).max(1),
+                (double_click_height / 2).max(1),
+            );
+
+            host.send_mouse_click(key, event, is_down, click_count);
         }
     }
 
@@ -619,6 +687,10 @@ impl Manager {
                 client.internal_hide(true, true);
             } else {
                 client.restore_hide_status();
+
+                if let Some(host) = client.browser().map(|browser| browser.host()) {
+                    host.invalidate(PaintElement::View);
+                }
             }
         }
     }
@@ -670,5 +742,108 @@ impl Manager {
             self.focused = None;
             self.focused_queue.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(500);
+
+    #[test]
+    fn click_sequence_counts_matching_clicks() {
+        let mut mouse = Mouse::default();
+        mouse.x = 100;
+        mouse.y = 200;
+        let start = Instant::now();
+
+        assert_eq!(
+            mouse.click_count(MouseKey::Left, true, start, DOUBLE_CLICK_TIME, 2, 2),
+            1
+        );
+        assert_eq!(
+            mouse.click_count(MouseKey::Left, false, start, DOUBLE_CLICK_TIME, 2, 2),
+            1
+        );
+        assert_eq!(
+            mouse.click_count(
+                MouseKey::Left,
+                true,
+                start + Duration::from_millis(100),
+                DOUBLE_CLICK_TIME,
+                2,
+                2,
+            ),
+            2
+        );
+        assert_eq!(
+            mouse.click_count(
+                MouseKey::Left,
+                false,
+                start + Duration::from_millis(110),
+                DOUBLE_CLICK_TIME,
+                2,
+                2,
+            ),
+            2
+        );
+        assert_eq!(
+            mouse.click_count(
+                MouseKey::Left,
+                true,
+                start + Duration::from_millis(200),
+                DOUBLE_CLICK_TIME,
+                2,
+                2,
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn click_sequence_resets_after_timeout_movement_or_button_change() {
+        let mut mouse = Mouse::default();
+        let start = Instant::now();
+
+        assert_eq!(
+            mouse.click_count(MouseKey::Left, true, start, DOUBLE_CLICK_TIME, 2, 2),
+            1
+        );
+        assert_eq!(
+            mouse.click_count(
+                MouseKey::Left,
+                true,
+                start + Duration::from_millis(501),
+                DOUBLE_CLICK_TIME,
+                2,
+                2,
+            ),
+            1
+        );
+
+        mouse.x = 3;
+        assert_eq!(
+            mouse.click_count(
+                MouseKey::Left,
+                true,
+                start + Duration::from_millis(600),
+                DOUBLE_CLICK_TIME,
+                2,
+                2,
+            ),
+            1
+        );
+        assert_eq!(
+            mouse.click_count(
+                MouseKey::Right,
+                true,
+                start + Duration::from_millis(650),
+                DOUBLE_CLICK_TIME,
+                2,
+                2,
+            ),
+            1
+        );
     }
 }

@@ -7,6 +7,8 @@
 #define OBJECT_BROWSER_URL "cef150-smoke/object.html"
 
 new SmokeObject = INVALID_OBJECT_ID;
+new Text:FilterProbe = Text:INVALID_TEXT_DRAW;
+new bool:FilterProbeVisible[MAX_PLAYERS];
 
 forward OnSmokeClient(playerid, const arguments[]);
 
@@ -19,6 +21,16 @@ public OnGameModeInit()
     cef_subscribe("smoke:client", "OnSmokeClient");
     SmokeObject = CreateObject(19371, 0.0, 0.0, 3.0, 0.0, 0.0, 90.0);
     SetObjectMaterial(SmokeObject, 0, 19341, "egg_texts", "easter_egg01", 0xFFFFFFFF);
+
+    FilterProbe = TextDrawCreate(320.0, 120.0, "TEXTDRAW FILTER PROBE");
+    TextDrawAlignment(FilterProbe, TEXT_DRAW_ALIGN_CENTER);
+    TextDrawLetterSize(FilterProbe, 0.45, 1.8);
+    TextDrawTextSize(FilterProbe, 620.0, 80.0);
+    TextDrawColour(FilterProbe, 0xFFFFFFFF);
+    TextDrawUseBox(FilterProbe, true);
+    TextDrawBoxColour(FilterProbe, 0xCC111111);
+    TextDrawSetSelectable(FilterProbe, true);
+
     printf("[cef-smoke] object created id=%d", SmokeObject);
     print("[cef-smoke] gamemode initialized");
     return 1;
@@ -80,6 +92,28 @@ public OnPlayerSpawn(playerid)
     SetPlayerPos(playerid, 0.0, -8.0, 3.0);
     SetPlayerCameraPos(playerid, 0.0, -8.0, 3.0);
     SetPlayerCameraLookAt(playerid, 0.0, 0.0, 3.0);
-
     return 1;
+}
+
+public OnPlayerCommandText(playerid, cmdtext[])
+{
+    if (!strcmp(cmdtext, "/textdraw", true))
+    {
+        FilterProbeVisible[playerid] = !FilterProbeVisible[playerid];
+
+        if (FilterProbeVisible[playerid])
+        {
+            TextDrawShowForPlayer(playerid, FilterProbe);
+            SelectTextDraw(playerid, 0x66FFFFFF);
+        }
+        else
+        {
+            CancelSelectTextDraw(playerid);
+            TextDrawHideForPlayer(playerid, FilterProbe);
+        }
+
+        return 1;
+    }
+
+    return 0;
 }

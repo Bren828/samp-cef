@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+use winapi::shared::d3d9::IDirect3DDevice9;
 
 use crate::browser::manager::{ExternalClient, Manager};
 use crate::static_cell::StaticCell;
@@ -19,6 +20,8 @@ use retour::GenericDetour;
 static RENDER: StaticCell<Render> = StaticCell::new();
 
 const REFERENCE_FRAMES: u64 = 10;
+const RESET_FLAG_PRE: u8 = 0;
+const RESET_FLAG_POST: u8 = 1;
 
 const DRAWING_EVENT: usize = 0x58FAE0;
 const SHUTDOWN_RW_EVENT: usize = 0x53BB80;
@@ -71,6 +74,18 @@ impl Render {
 
 pub fn initialize(manager: Arc<Mutex<Manager>>) {
     tracing::debug!("initializing rendering hooks");
+
+    if client_api::gta::d3d9::set_proxy(None, Some(on_reset)) {
+        tracing::debug!("Direct3D device reset hook installed");
+    } else {
+        client_api::gta::d9_proxy::set_proxy(
+            on_device_created,
+            on_device_render,
+            on_reset,
+            on_device_destroy,
+        );
+        tracing::debug!("Direct3D device creation hook installed");
+    }
 
     let centity_render = unsafe {
         let render_func: extern "thiscall" fn(*mut CEntity) = std::mem::transmute(0x00534310);
@@ -127,6 +142,36 @@ pub fn uninitialize() {
 
 fn on_render() {
     crate::app::mainloop();
+}
+
+fn on_device_created() {
+    tracing::debug!("Direct3D device created with reset hook");
+}
+
+fn on_device_render(_: &mut IDirect3DDevice9) {}
+
+fn on_device_destroy(_: &mut IDirect3DDevice9) {}
+
+fn on_reset(_: &mut IDirect3DDevice9, reset_flag: u8) {
+    let Some(render) = Render::get() else {
+        return;
+    };
+
+    let mut manager = render.manager.lock();
+
+    match reset_flag {
+        RESET_FLAG_PRE => {
+            manager.on_lost_device();
+            drop(manager);
+            crate::external::call_dxreset();
+        }
+        RESET_FLAG_POST => {
+            manager.on_reset_device();
+            let rect = crate::utils::client_rect();
+            manager.resize(rect[0], rect[1]);
+        }
+        _ => {}
+    }
 }
 
 pub fn render() {

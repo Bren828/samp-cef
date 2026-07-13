@@ -48,10 +48,30 @@ pub(crate) enum ServerEvent {
     },
 }
 
+enum AwaitConnection {
+    Pending(Instant),
+    TimedOut,
+}
+
+impl AwaitConnection {
+    fn notify_timeout(&mut self, now: Instant) -> bool {
+        let AwaitConnection::Pending(started_at) = self else {
+            return false;
+        };
+
+        if now.duration_since(*started_at) < INIT_TIMEOUT {
+            return false;
+        }
+
+        *self = AwaitConnection::TimedOut;
+        true
+    }
+}
+
 pub struct ServerCore {
     server: Arc<Mutex<Server>>,
     event_rx: Receiver<ServerEvent>,
-    await_connect: std::collections::HashMap<i32, Instant>,
+    await_connect: std::collections::HashMap<i32, AwaitConnection>,
     ips: std::collections::HashMap<i32, IpAddr>,
     pending_events: VecDeque<CoreEvent>,
 }
@@ -90,7 +110,8 @@ impl ServerCore {
         }
 
         if !already_connected {
-            self.await_connect.insert(player_id, Instant::now());
+            self.await_connect
+                .insert(player_id, AwaitConnection::Pending(Instant::now()));
         }
     }
 
@@ -229,18 +250,42 @@ impl ServerCore {
     fn notify_timeouts(&mut self) {
         let mut keys = Vec::new();
 
-        for (&player_id, timing) in self.await_connect.iter() {
-            if timing.elapsed() >= INIT_TIMEOUT {
+        let now = Instant::now();
+        for (&player_id, state) in self.await_connect.iter_mut() {
+            if state.notify_timeout(now) {
                 keys.push(player_id);
             }
         }
 
         for player_id in keys {
-            self.await_connect.remove(&player_id);
             self.pending_events.push_back(CoreEvent::PlayerInitialized {
                 player_id,
                 success: false,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_is_reported_once_while_late_connection_remains_expected() {
+        let now = Instant::now();
+        let mut state = AwaitConnection::Pending(now - INIT_TIMEOUT);
+
+        assert!(state.notify_timeout(now));
+        assert!(matches!(state, AwaitConnection::TimedOut));
+        assert!(!state.notify_timeout(now + INIT_TIMEOUT));
+    }
+
+    #[test]
+    fn connection_does_not_time_out_early() {
+        let now = Instant::now();
+        let mut state = AwaitConnection::Pending(now);
+
+        assert!(!state.notify_timeout(now + INIT_TIMEOUT - Duration::from_millis(1)));
+        assert!(matches!(state, AwaitConnection::Pending(_)));
     }
 }
