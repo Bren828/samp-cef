@@ -63,18 +63,46 @@ impl RwContainer {
     #[inline]
     pub fn bytes(&mut self) -> Option<RwLockGuard<'_>> {
         unsafe {
-            self.raster.as_mut().map(|raster| {
-                let bytes = raster.as_mut().lock(0);
-                let size = {
-                    let raster = raster.as_mut();
-                    raster.height * raster.width * 4
-                };
+            let raster = self.raster.as_mut()?;
+            let raster_ref = raster.as_mut();
+            let bytes = raster_ref.lock(0);
+            if bytes.is_null() {
+                tracing::warn!("RenderWare raster lock returned a null pointer");
+                return None;
+            }
 
-                RwLockGuard {
-                    bytes: std::slice::from_raw_parts_mut(bytes, size as usize),
-                    pitch: raster.as_mut().stride as usize,
-                    raster: *raster,
+            let pitch = match usize::try_from(raster_ref.stride) {
+                Ok(pitch) => pitch,
+                Err(_) => {
+                    tracing::warn!(
+                        stride = raster_ref.stride,
+                        "invalid RenderWare raster stride"
+                    );
+                    raster_ref.unlock();
+                    return None;
                 }
+            };
+            let height = match usize::try_from(raster_ref.height) {
+                Ok(height) => height,
+                Err(_) => {
+                    tracing::warn!(
+                        height = raster_ref.height,
+                        "invalid RenderWare raster height"
+                    );
+                    raster_ref.unlock();
+                    return None;
+                }
+            };
+            let Some(size) = pitch.checked_mul(height) else {
+                tracing::warn!(pitch, height, "RenderWare raster size overflow");
+                raster_ref.unlock();
+                return None;
+            };
+
+            Some(RwLockGuard {
+                bytes: std::slice::from_raw_parts_mut(bytes, size),
+                pitch,
+                raster: *raster,
             })
         }
     }
@@ -216,9 +244,10 @@ impl View {
     }
 
     #[inline(always)]
-    pub fn update_texture(&mut self, bytes: &[u8], rects: &[cef_rect_t]) {
+    pub fn update_texture(&mut self, bytes: &[u8], rects: &[cef_rect_t]) -> bool {
         if let Some(mut dest) = self.container.as_mut().and_then(|rw| rw.bytes()) {
-            let pitch = dest.pitch;
+            let destination_pitch = dest.pitch;
+            let source_pitch = self.width.saturating_mul(4);
             let dest = &mut *dest;
 
             let dest = dest.as_mut_ptr();
@@ -227,13 +256,18 @@ impl View {
             for cef_rect in rects {
                 for y in cef_rect.y as usize..(cef_rect.y as usize + cef_rect.height as usize) {
                     unsafe {
-                        let index = pitch * y + cef_rect.x as usize * 4;
-                        let ptr = dest.add(index);
-                        let pixels = pixels_origin.add(index);
+                        let destination_index = destination_pitch * y + cef_rect.x as usize * 4;
+                        let source_index = source_pitch * y + cef_rect.x as usize * 4;
+                        let ptr = dest.add(destination_index);
+                        let pixels = pixels_origin.add(source_index);
                         std::ptr::copy(pixels, ptr, cef_rect.width as usize * 4);
                     }
                 }
             }
+
+            true
+        } else {
+            false
         }
     }
 

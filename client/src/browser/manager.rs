@@ -43,6 +43,10 @@ struct Mouse {
     last_click: Option<ClickSequence>,
 }
 
+fn windowless_frame_rate(fps: u64) -> i32 {
+    fps.max(15).min(i32::MAX as u64) as i32
+}
+
 impl Mouse {
     fn click_count(
         &mut self, button: MouseKey, is_down: bool, now: Instant, max_interval: Duration,
@@ -107,7 +111,6 @@ pub struct Manager {
     mouse: Mouse,
     view_width: usize,
     view_height: usize,
-    prev_fps: u64,
     cef_running: bool,
 }
 
@@ -136,7 +139,6 @@ impl Manager {
             pending_object_ids: HashMap::new(),
             view_height: 0,
             view_width: 0,
-            prev_fps: 60,
             input_corrupted: false,
             do_not_draw: false,
             cef_running: false,
@@ -278,7 +280,7 @@ impl Manager {
 
     #[inline]
     pub fn draw(&self) {
-        for client in self.clients.values() {
+        for client in self.clients.values().filter(|client| !client.is_hidden()) {
             client.update_view();
         }
 
@@ -287,15 +289,27 @@ impl Manager {
         }
 
         if let Some(&focus) = self.focused.as_ref() {
-            for client in self.clients.values().filter(|client| client.id() != focus) {
+            for client in self
+                .clients
+                .values()
+                .filter(|client| client.id() != focus && !client.is_extern() && !client.is_hidden())
+            {
                 client.draw();
             }
 
-            if let Some(focused) = self.clients.get(&focus) {
+            if let Some(focused) = self
+                .clients
+                .get(&focus)
+                .filter(|client| !client.is_extern() && !client.is_hidden())
+            {
                 focused.draw();
             }
         } else {
-            for client in self.clients.values() {
+            for client in self
+                .clients
+                .values()
+                .filter(|client| !client.is_extern() && !client.is_hidden())
+            {
                 client.draw();
             }
         }
@@ -621,16 +635,9 @@ impl Manager {
 
     #[inline(always)]
     pub fn update_fps(&mut self, fps: u64) {
-        let fps_small = fps as i32;
-        let fps_small = std::cmp::max(15, fps_small); // std::cmp::min(60, fps_small)
-
-        for browser in self.clients.values().filter_map(|client| client.browser()) {
-            let host = browser.host();
-
-            if self.prev_fps != fps {
-                host.set_windowless_frame_rate(fps_small);
-                self.prev_fps = fps;
-            }
+        let fps_small = windowless_frame_rate(fps);
+        for client in self.clients.values() {
+            client.set_windowless_frame_rate(fps_small);
         }
     }
 
@@ -750,6 +757,13 @@ mod tests {
     use super::*;
 
     const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(500);
+
+    #[test]
+    fn windowless_frame_rate_has_no_practical_upper_fps_cap() {
+        assert_eq!(windowless_frame_rate(0), 15);
+        assert_eq!(windowless_frame_rate(240), 240);
+        assert_eq!(windowless_frame_rate(u64::MAX), i32::MAX);
+    }
 
     #[test]
     fn click_sequence_counts_matching_clicks() {

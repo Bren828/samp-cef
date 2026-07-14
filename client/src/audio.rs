@@ -7,10 +7,10 @@ use crossbeam_queue::ArrayQueue;
 use hrtf::{HrirSphere, HrtfContext, HrtfProcessor, Vec3};
 use nalgebra::{Point3, Rotation3, Vector3};
 use parking_lot::{Mutex, RwLock};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use winapi::um::winuser::{GetForegroundWindow, IsIconic};
 
@@ -90,8 +90,10 @@ pub struct Audio {
     command_tx: Sender<Command>,
     stream_formats: RwLock<HashMap<(u32, i32), StreamFormat>>,
     listener: Mutex<Listener>,
+    muted_objects: Mutex<HashSet<i32>>,
     pcm_seen: AtomicBool,
     paused: AtomicBool,
+    gain_bits: AtomicU32,
 }
 
 impl Audio {
@@ -110,8 +112,10 @@ impl Audio {
                 position: Point3::origin(),
                 rotation: Rotation3::identity(),
             }),
+            muted_objects: Mutex::new(HashSet::new()),
             pcm_seen: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            gain_bits: AtomicU32::new(1.0f32.to_bits()),
         })
     }
 
@@ -234,6 +238,7 @@ impl Audio {
     }
 
     pub fn add_source(&self, browser: u32, object_id: i32) {
+        self.muted_objects.lock().remove(&object_id);
         self.send_control(Command::Source { browser, object_id });
     }
 
@@ -242,7 +247,11 @@ impl Audio {
     }
 
     pub fn set_gain(&self, gain: f32) {
-        self.send_control(Command::Gain(gain.max(0.0)));
+        let gain = gain.max(0.0);
+        let gain_bits = gain.to_bits();
+        if self.gain_bits.swap(gain_bits, Ordering::Relaxed) != gain_bits {
+            self.send_control(Command::Gain(gain));
+        }
     }
 
     pub fn set_velocity(&self, _velocity: CVector) {}
@@ -261,6 +270,7 @@ impl Audio {
         &self, object_id: i32, position: CVector, velocity: CVector, _direction: CVector,
         settings: BrowserAudioSettings,
     ) {
+        self.muted_objects.lock().remove(&object_id);
         let relative_position = {
             let listener = self.listener.lock();
             let relative = Point3::new(
@@ -280,7 +290,9 @@ impl Audio {
     }
 
     pub fn object_mute(&self, object_id: i32) {
-        self.send_control(Command::MuteObject(object_id));
+        if self.muted_objects.lock().insert(object_id) {
+            self.send_control(Command::MuteObject(object_id));
+        }
     }
 
     pub fn set_paused(&self, paused: bool) {

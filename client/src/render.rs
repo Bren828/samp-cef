@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use winapi::shared::d3d9::IDirect3DDevice9;
+use winapi::shared::windef::{HWND, RECT};
+use winapi::um::wingdi::RGNDATA;
+use winapi::um::winnt::HRESULT;
 
 use crate::browser::manager::{ExternalClient, Manager};
 use crate::static_cell::StaticCell;
@@ -25,10 +28,19 @@ const RESET_FLAG_POST: u8 = 1;
 
 const DRAWING_EVENT: usize = 0x58FAE0;
 const SHUTDOWN_RW_EVENT: usize = 0x53BB80;
+const OBJECT_RENDER: usize = 0x59FD50;
 
 type DrawingEventFn = extern "C" fn();
 type ShutdownRwEventFn = extern "C" fn();
 type EntityRenderFn = extern "thiscall" fn(obj: *mut CEntity);
+type DlRwRenderFn = extern "stdcall" fn(obj: *mut RwObject);
+type PresentFn = unsafe extern "system" fn(
+    *mut IDirect3DDevice9,
+    *const RECT,
+    *const RECT,
+    HWND,
+    *const RGNDATA,
+) -> HRESULT;
 
 struct FrameCounter {
     start_at: Instant,
@@ -39,9 +51,11 @@ struct FrameCounter {
 struct Render {
     manager: Arc<Mutex<Manager>>,
     centity_render: GenericDetour<EntityRenderFn>,
+    dl_rw_render: Option<GenericDetour<DlRwRenderFn>>,
     atomic_hooks: HashMap<usize, AtomicHook>,
     drawing_event: GenericDetour<DrawingEventFn>,
     shutdown_event: GenericDetour<ShutdownRwEventFn>,
+    present: Option<GenericDetour<PresentFn>>,
     counter: FrameCounter,
     last_atomic_probe: Instant,
 }
@@ -88,7 +102,7 @@ pub fn initialize(manager: Arc<Mutex<Manager>>) {
     }
 
     let centity_render = unsafe {
-        let render_func: extern "thiscall" fn(*mut CEntity) = std::mem::transmute(0x00534310);
+        let render_func: extern "thiscall" fn(*mut CEntity) = std::mem::transmute(OBJECT_RENDER);
         let centity_render = GenericDetour::new(render_func, centity_render).unwrap();
 
         centity_render.enable().unwrap();
@@ -122,9 +136,11 @@ pub fn initialize(manager: Arc<Mutex<Manager>>) {
     let render = Render {
         manager,
         centity_render,
+        dl_rw_render: None,
         atomic_hooks: HashMap::new(),
         drawing_event,
         shutdown_event,
+        present: None,
         counter,
         last_atomic_probe: Instant::now(),
     };
@@ -132,10 +148,25 @@ pub fn initialize(manager: Arc<Mutex<Manager>>) {
     unsafe {
         RENDER.set(render);
     }
+
+    try_install_present_hook();
+    try_install_dl_rw_render_hook();
 }
 
 pub fn uninitialize() {
     unsafe {
+        if let Some(render) = Render::get()
+            && let Some(present) = render.present.as_ref()
+        {
+            let _ = present.disable();
+        }
+
+        if let Some(render) = Render::get()
+            && let Some(dl_rw_render) = render.dl_rw_render.as_ref()
+        {
+            let _ = dl_rw_render.disable();
+        }
+
         RENDER.take();
     }
 }
@@ -148,9 +179,133 @@ fn on_device_created() {
     tracing::debug!("Direct3D device created with reset hook");
 }
 
-fn on_device_render(_: &mut IDirect3DDevice9) {}
+fn on_device_render(_: &mut IDirect3DDevice9) {
+    if !try_install_present_hook() {
+        render();
+    }
+}
 
 fn on_device_destroy(_: &mut IDirect3DDevice9) {}
+
+fn samp_device_offset() -> Option<usize> {
+    match version() {
+        Version::V03DL => Some(0x2AC9D0),
+        Version::V037 => Some(0x21A0A8),
+        Version::V037R3 => Some(0x26E888),
+        _ => None,
+    }
+}
+
+fn try_install_present_hook() -> bool {
+    let Some(render) = Render::get() else {
+        return false;
+    };
+
+    if render.present.is_some() {
+        return true;
+    }
+
+    let Some(device_offset) = samp_device_offset() else {
+        return false;
+    };
+    if !client_api::samp::is_loaded() {
+        return false;
+    }
+
+    let hook = unsafe {
+        let device_ptr =
+            client_api::samp::handle().add(device_offset) as *const *mut IDirect3DDevice9;
+        let device = device_ptr.read();
+
+        if device.is_null() || (*device).lpVtbl.is_null() {
+            return false;
+        }
+
+        let present = (*(*device).lpVtbl).Present;
+
+        match GenericDetour::new(present, native_present) {
+            Ok(hook) => hook,
+            Err(error) => {
+                tracing::warn!(%error, "cannot create native Direct3D Present hook");
+                return false;
+            }
+        }
+    };
+
+    render.present = Some(hook);
+
+    let result = unsafe { render.present.as_ref().unwrap().enable() };
+    if let Err(error) = result {
+        render.present.take();
+        tracing::warn!(%error, "cannot enable native Direct3D Present hook");
+        return false;
+    }
+
+    tracing::debug!("native Direct3D Present hook installed");
+    true
+}
+
+fn try_install_dl_rw_render_hook() -> bool {
+    const DL_RW_RENDER_OFFSET: usize = 0xB5E70;
+
+    let Some(render) = Render::get() else {
+        return false;
+    };
+
+    if render.dl_rw_render.is_some() {
+        return true;
+    }
+    if version() != Version::V03DL || !client_api::samp::is_loaded() {
+        return false;
+    }
+
+    let hook = unsafe {
+        let original: DlRwRenderFn =
+            std::mem::transmute(client_api::samp::handle().add(DL_RW_RENDER_OFFSET));
+        match GenericDetour::new(original, dl_rw_render) {
+            Ok(hook) => hook,
+            Err(error) => {
+                tracing::warn!(%error, "cannot create 0.3.DL object rendering hook");
+                return false;
+            }
+        }
+    };
+
+    render.dl_rw_render = Some(hook);
+    let result = unsafe { render.dl_rw_render.as_ref().unwrap().enable() };
+    if let Err(error) = result {
+        render.dl_rw_render.take();
+        tracing::warn!(%error, "cannot enable 0.3.DL object rendering hook");
+        return false;
+    }
+
+    tracing::debug!("0.3.DL object rendering hook installed");
+    true
+}
+
+unsafe extern "system" fn native_present(
+    device: *mut IDirect3DDevice9, source_rect: *const RECT, destination_rect: *const RECT,
+    destination_window: HWND, dirty_region: *const RGNDATA,
+) -> HRESULT {
+    render();
+
+    let Some(render) = Render::get() else {
+        return 0x80004005_u32 as HRESULT;
+    };
+    let Some(present) = render.present.as_ref() else {
+        return 0x80004005_u32 as HRESULT;
+    };
+
+    unsafe {
+        present.call(
+            device,
+            source_rect,
+            destination_rect,
+            destination_window,
+            dirty_region,
+        )
+    }
+}
 
 fn on_reset(_: &mut IDirect3DDevice9, reset_flag: u8) {
     let Some(render) = Render::get() else {
@@ -206,6 +361,8 @@ struct RenderState {
 }
 
 extern "C" fn drawing_event() {
+    try_install_dl_rw_render_hook();
+
     if let Some(render) = Render::get() {
         render.drawing_event.call();
 
@@ -216,6 +373,44 @@ extern "C" fn drawing_event() {
     }
 
     on_render();
+    try_install_present_hook();
+}
+
+extern "stdcall" fn dl_rw_render(rwobject: *mut RwObject) {
+    let Some(render) = Render::get() else {
+        return;
+    };
+    let Some(original) = render.dl_rw_render.as_ref() else {
+        return;
+    };
+
+    let mut manager = render.manager.lock();
+    for browser in manager.external_browsers() {
+        let browser_ptr = browser as *mut _;
+        for &object_id in &browser.object_ids {
+            let matches = Object::get(object_id)
+                .and_then(|object| object.entity())
+                .is_some_and(|entity| entity._base._base.rw_entity as *mut RwObject == rwobject);
+            if !matches {
+                continue;
+            }
+
+            let mut before = RenderState {
+                client: browser_ptr,
+                before: true,
+            };
+            replace_texture(rwobject, &mut before as *mut _ as *mut c_void);
+            original.call(rwobject);
+            let mut after = RenderState {
+                client: browser_ptr,
+                before: false,
+            };
+            replace_texture(rwobject, &mut after as *mut _ as *mut c_void);
+            return;
+        }
+    }
+
+    original.call(rwobject);
 }
 
 #[derive(Clone, Copy)]

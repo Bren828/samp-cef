@@ -2,12 +2,11 @@ use std::collections::HashSet;
 use std::ffi::CString;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicI32, Ordering},
 };
-use std::time::Duration;
 
 use crossbeam_channel::Sender;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 
 use cef::ProcessId;
 use cef::browser::{Browser, ContextMenuParams, Frame, MenuModel};
@@ -30,6 +29,8 @@ use crate::audio::Audio;
 use crate::browser::view::View;
 use crate::external::{CallbackList, EXTERNAL_BREAK};
 
+const MAX_PENDING_DIRTY_RECTS: usize = 64;
+
 struct DrawData {
     view_buffer: Vec<u8>,
     width: usize,
@@ -38,9 +39,9 @@ struct DrawData {
     popup_buffer: Vec<u8>,
     popup_rect: cef_rect_t,
     popup_show: bool,
+    popup_changed: bool,
     popup_was_before: bool,
     changed: bool,
-    generation: u64,
 }
 
 impl DrawData {
@@ -63,11 +64,27 @@ impl DrawData {
             },
 
             popup_show: false,
+            popup_changed: false,
             popup_was_before: false,
             changed: false,
-            generation: 0,
         }
     }
+}
+
+fn rect_fits(rect: &cef_rect_t, width: usize, height: usize) -> bool {
+    let (Ok(x), Ok(y), Ok(rect_width), Ok(rect_height)) = (
+        usize::try_from(rect.x),
+        usize::try_from(rect.y),
+        usize::try_from(rect.width),
+        usize::try_from(rect.height),
+    ) else {
+        return false;
+    };
+
+    x.checked_add(rect_width)
+        .is_some_and(|right| right <= width)
+        && y.checked_add(rect_height)
+            .is_some_and(|bottom| bottom <= height)
 }
 
 pub struct WebClient {
@@ -84,7 +101,7 @@ pub struct WebClient {
     event_tx: Sender<Event>,
     callbacks: CallbackList,
     object_list: Mutex<HashSet<i32>>,
-    rendered: (Mutex<u64>, Condvar),
+    windowless_frame_rate: AtomicI32,
 }
 
 #[derive(Clone)]
@@ -285,6 +302,7 @@ impl RenderHandler for WebClientRef {
 
         if !show {
             draw_data.popup_buffer.clear();
+            draw_data.popup_changed = false;
             draw_data.popup_was_before = true; // REMOVE
         }
     }
@@ -293,81 +311,84 @@ impl RenderHandler for WebClientRef {
         let mut draw_data = self.0.draw_data.lock();
 
         draw_data.popup_rect = *rect;
+        let buffer_len = usize::try_from(rect.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(rect.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4));
 
-        draw_data
-            .popup_buffer
-            .resize(rect.width as usize * rect.height as usize * 4, 0);
+        if let Some(buffer_len) = buffer_len {
+            draw_data.popup_buffer.resize(buffer_len, 0);
+            draw_data.popup_changed = true;
+        } else {
+            draw_data.popup_buffer.clear();
+            draw_data.popup_changed = false;
+        }
     }
 
     fn on_paint(
         &self, _: Browser, paint_type: PaintElement, mut dirty_rects: DirtyRects, buffer: &[u8],
         width: usize, height: usize,
     ) {
-        let view = self.0.view.lock();
-
-        if self.0.closing.load(Ordering::SeqCst) || view.is_empty() {
+        if self.0.closing.load(Ordering::SeqCst) || self.0.view.lock().is_empty() {
             return;
         }
 
-        let generation = {
-            let mut draw_data = self.0.draw_data.lock();
-
-            match paint_type {
-                PaintElement::Popup => {
-                    if draw_data.popup_buffer.len() == buffer.len() {
-                        draw_data.popup_buffer.copy_from_slice(buffer);
-                    }
-
-                    return;
-                }
-
-                PaintElement::View => {
-                    if draw_data.popup_was_before && !draw_data.popup_show {
-                        draw_data.popup_was_before = false;
-                        dirty_rects.count += 1;
-                        dirty_rects.rects.push(draw_data.popup_rect);
-                    }
-
-                    draw_data.rects = dirty_rects;
-                    draw_data.height = height;
-                    draw_data.width = width;
-                    if draw_data.view_buffer.len() != buffer.len() {
-                        draw_data.view_buffer.resize(buffer.len(), 0);
-                    }
-                    draw_data.view_buffer.copy_from_slice(buffer);
-                    draw_data.changed = true;
-                    draw_data.generation = draw_data.generation.wrapping_add(1);
-                }
-            }
-
-            draw_data.generation
-        };
-
-        drop(view);
-
-        let (mutex, cv) = &self.0.rendered;
-        let mut rendered = mutex.lock();
-
-        while *rendered < generation {
-            if cv
-                .wait_for(&mut rendered, Duration::from_secs(2))
-                .timed_out()
-                && *rendered < generation
-            {
-                drop(rendered);
-                let mut draw_data = self.0.draw_data.lock();
-                if draw_data.generation == generation {
-                    draw_data.changed = false;
-                    draw_data.view_buffer.clear();
-                }
-                return;
-            }
-        }
-
-        drop(rendered);
         let mut draw_data = self.0.draw_data.lock();
-        if draw_data.generation == generation {
-            draw_data.changed = false;
+
+        match paint_type {
+            PaintElement::Popup => {
+                if draw_data.popup_buffer.len() == buffer.len() {
+                    draw_data.popup_buffer.copy_from_slice(buffer);
+                    draw_data.popup_changed = true;
+                }
+            }
+
+            PaintElement::View => {
+                if draw_data.popup_was_before && !draw_data.popup_show {
+                    draw_data.popup_was_before = false;
+                    dirty_rects.rects.push(draw_data.popup_rect);
+                    dirty_rects.count = dirty_rects.rects.len();
+                }
+
+                let dimensions_changed = draw_data.width != width || draw_data.height != height;
+                let mut force_full_upload = dimensions_changed;
+                if dimensions_changed || draw_data.view_buffer.len() != buffer.len() {
+                    draw_data.view_buffer.resize(buffer.len(), 0);
+                    force_full_upload = true;
+                }
+                draw_data.view_buffer.copy_from_slice(buffer);
+
+                if force_full_upload {
+                    draw_data.rects.rects.clear();
+                    draw_data.rects.rects.push(cef_rect_t {
+                        x: 0,
+                        y: 0,
+                        width: width as i32,
+                        height: height as i32,
+                    });
+                } else if draw_data.changed {
+                    draw_data.rects.rects.extend(dirty_rects.rects);
+                    if draw_data.rects.rects.len() > MAX_PENDING_DIRTY_RECTS {
+                        draw_data.rects.rects.clear();
+                        draw_data.rects.rects.push(cef_rect_t {
+                            x: 0,
+                            y: 0,
+                            width: width as i32,
+                            height: height as i32,
+                        });
+                    }
+                } else {
+                    draw_data.rects = dirty_rects;
+                }
+                draw_data.rects.count = draw_data.rects.rects.len();
+                draw_data.height = height;
+                draw_data.width = width;
+                draw_data.changed = true;
+            }
         }
     }
 }
@@ -470,7 +491,7 @@ impl WebClient {
             audio,
             event_tx,
             id,
-            rendered: (Mutex::new(0), Condvar::new()),
+            windowless_frame_rate: AtomicI32::new(0),
         };
 
         Arc::new(client)
@@ -496,7 +517,7 @@ impl WebClient {
             audio,
             event_tx,
             id,
-            rendered: (Mutex::new(0), Condvar::new()),
+            windowless_frame_rate: AtomicI32::new(0),
         };
 
         Arc::new(client)
@@ -517,8 +538,6 @@ impl WebClient {
             texture.on_lost_device();
             texture.make_inactive();
         }
-
-        self.signal_rendered_current();
     }
 
     #[inline]
@@ -545,8 +564,6 @@ impl WebClient {
         let mut view = self.view.lock();
         view.resize(self.is_extern(), width, height);
         self.notify_was_resized();
-
-        self.signal_rendered_current();
     }
 
     fn notify_was_resized(&self) {
@@ -560,15 +577,13 @@ impl WebClient {
     #[inline]
     pub fn update_view(&self) {
         if self.hidden.load(Ordering::SeqCst) || self.closing.load(Ordering::SeqCst) {
-            self.signal_rendered_current();
             return;
         }
 
-        let generation = {
+        {
             let mut texture = self.view.lock();
             let mut draw_data = self.draw_data.lock();
             let size = texture.rect();
-            let generation = draw_data.generation;
 
             if draw_data.changed
                 && (size.height as usize != draw_data.height
@@ -582,9 +597,14 @@ impl WebClient {
                     draw_data.changed = false;
                 }
 
-                let expected_len = draw_data.width * draw_data.height * 4;
+                let expected_len = draw_data
+                    .width
+                    .checked_mul(draw_data.height)
+                    .and_then(|pixels| pixels.checked_mul(4));
 
-                if draw_data.view_buffer.len() < expected_len {
+                if expected_len
+                    .is_none_or(|expected_len| draw_data.view_buffer.len() < expected_len)
+                {
                     draw_data.changed = false;
                 }
 
@@ -596,42 +616,26 @@ impl WebClient {
                 }
 
                 if draw_data.changed {
+                    let expected_len = expected_len.expect("validated frame buffer size");
                     let bytes = &draw_data.view_buffer[..expected_len];
-                    texture.update_texture(bytes, draw_data.rects.as_slice());
+                    if texture.update_texture(bytes, draw_data.rects.as_slice()) {
+                        draw_data.changed = false;
+                    }
                 }
             }
 
             if draw_data.popup_show
-                && draw_data.popup_rect.x + draw_data.popup_rect.width < size.width
-                && draw_data.popup_rect.y + draw_data.popup_rect.height < size.height
+                && draw_data.popup_changed
+                && rect_fits(
+                    &draw_data.popup_rect,
+                    size.width.max(0) as usize,
+                    size.height.max(0) as usize,
+                )
             {
                 texture.update_popup(&draw_data.popup_buffer, &draw_data.popup_rect);
-            }
-
-            generation
-        };
-
-        self.signal_rendered(generation);
-    }
-
-    #[inline(always)]
-    fn signal_rendered(&self, generation: u64) {
-        let (mutex, cv) = &self.rendered;
-
-        {
-            let mut rendered = mutex.lock();
-            if generation > *rendered {
-                *rendered = generation;
+                draw_data.popup_changed = false;
             }
         }
-
-        cv.notify_all();
-    }
-
-    #[inline(always)]
-    fn signal_rendered_current(&self) {
-        let generation = self.draw_data.lock().generation;
-        self.signal_rendered(generation);
     }
 
     #[inline(always)]
@@ -652,7 +656,6 @@ impl WebClient {
         }
 
         self.hidden.store(hide, Ordering::SeqCst);
-        self.signal_rendered_current();
 
         if let Some(host) = self.browser().map(|browser| browser.host()) {
             if hide {
@@ -744,9 +747,23 @@ impl WebClient {
         self.is_extern
     }
 
+    pub fn is_hidden(&self) -> bool {
+        self.hidden.load(Ordering::Relaxed)
+    }
+
+    pub fn set_windowless_frame_rate(&self, fps: i32) {
+        if self.windowless_frame_rate.load(Ordering::Relaxed) == fps {
+            return;
+        }
+
+        if let Some(browser) = self.browser() {
+            browser.host().set_windowless_frame_rate(fps);
+            self.windowless_frame_rate.store(fps, Ordering::Relaxed);
+        }
+    }
+
     pub fn close(&self, force_close: bool) {
         self.closing.store(true, Ordering::SeqCst);
-        self.signal_rendered_current();
 
         if let Some(host) = self.browser().map(|br| br.host()) {
             host.close_browser(force_close)

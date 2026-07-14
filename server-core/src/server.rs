@@ -35,6 +35,7 @@ pub struct Server {
     sender: Sender<Packet>,
     allowed: HashMap<IpAddr, i32>,
     clients: HashMap<PeerId, Client>,
+    players: HashMap<i32, PeerId>,
 }
 
 impl Server {
@@ -51,6 +52,7 @@ impl Server {
             sender,
             allowed: HashMap::new(),
             clients: HashMap::new(),
+            players: HashMap::new(),
         };
 
         let server = Arc::new(Mutex::new(server));
@@ -177,7 +179,9 @@ impl Server {
 
     fn handle_timeout(&mut self, addr: PeerId) {
         trace!("handle_timeout {:?}", addr);
-        self.clients.remove(&addr);
+        if let Some(client) = self.clients.remove(&addr) {
+            self.players.remove(&client.id());
+        }
 
         trace!("{:#?}", self.allowed);
         trace!("{:#?}", self.clients);
@@ -197,6 +201,7 @@ impl Server {
                 let client = Client::new(player_id, peer, addr);
 
                 self.clients.insert(peer, client);
+                self.players.insert(player_id, peer);
 
                 let request = packets::OpenConnection {};
 
@@ -223,6 +228,7 @@ impl Server {
 
             if !same_addr {
                 self.clients.remove(&peer);
+                self.players.remove(&player_id);
             }
         }
 
@@ -235,6 +241,7 @@ impl Server {
         if let Some(peer) = peer
             && let Some(client) = self.clients.remove(&peer)
         {
+            self.players.remove(&player_id);
             self.allowed.remove(&client.addr().ip());
             let _ = self.sender.send(Packet::Disconnect(client.peer()));
         }
@@ -403,9 +410,6 @@ impl Server {
     }
 
     fn peer_by_id(&self, player_id: i32) -> Option<PeerId> {
-        self.clients
-            .iter()
-            .find(|(_, client)| client.id() == player_id)
-            .map(|(&peer, _)| peer)
+        self.players.get(&player_id).copied()
     }
 }

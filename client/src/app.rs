@@ -33,6 +33,7 @@ const CEF_SERVER_PORT_OFFSET: u16 = 2;
 pub const CEF_PLUGIN_VERSION: i32 = 0x00_01_00;
 const CONNECT_BACKOFF_BASE: Duration = Duration::from_secs(1);
 const CONNECT_BACKOFF_MAX: Duration = Duration::from_secs(10);
+const AUDIO_SPATIAL_UPDATE_INTERVAL: Duration = Duration::from_millis(33);
 
 static APP: StaticCell<App> = StaticCell::new();
 
@@ -86,6 +87,7 @@ pub struct App {
     bad_version_notified: bool,
     connect_backoff: Duration,
     next_connect_attempt: Instant,
+    last_audio_spatial_update: Instant,
 
     manager: Arc<Mutex<Manager>>,
     audio: Arc<Audio>,
@@ -155,6 +157,7 @@ impl App {
             bad_version_notified: false,
             connect_backoff: CONNECT_BACKOFF_BASE,
             next_connect_attempt: Instant::now(),
+            last_audio_spatial_update: Instant::now() - AUDIO_SPATIAL_UPDATE_INTERVAL,
             network: None,
             initialization: Instant::now(),
             manager,
@@ -191,10 +194,6 @@ impl App {
             if let Some(app) = App::get() {
                 app.disconnect();
             }
-        });
-
-        client_api::samp::deathwindow::DeathWindow::on_draw(|| {
-            crate::render::render();
         });
 
         client_api::gta::game::on_shutdown(|| {
@@ -527,7 +526,10 @@ pub fn mainloop() {
         if app.cef_ready && app.connected {
             crate::external::call_mainloop();
 
-            if let Some(local) = local_player() {
+            if app.last_audio_spatial_update.elapsed() >= AUDIO_SPATIAL_UPDATE_INTERVAL
+                && let Some(local) = local_player()
+            {
+                app.last_audio_spatial_update = Instant::now();
                 let position = local.position();
                 let velocity = local.velocity();
                 let matrix = CCamera::get().matrix();
@@ -581,11 +583,20 @@ fn win_event(msg: UINT, wparam: WPARAM, lparam: LPARAM) -> bool {
                 manager.send_mouse_move_event(x, y);
             }
 
-            WM_LBUTTONDOWN => manager.send_mouse_click_event(MouseKey::Left, true),
+            // With CS_DBLCLKS Windows replaces the second BUTTONDOWN with BUTTONDBLCLK.
+            // CEF still expects that message as the second mouse-down event, with
+            // click_count=2; dropping it leaves the browser with an unmatched mouse-up.
+            WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+                manager.send_mouse_click_event(MouseKey::Left, true)
+            }
             WM_LBUTTONUP => manager.send_mouse_click_event(MouseKey::Left, false),
-            WM_RBUTTONDOWN => manager.send_mouse_click_event(MouseKey::Right, true),
+            WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => {
+                manager.send_mouse_click_event(MouseKey::Right, true)
+            }
             WM_RBUTTONUP => manager.send_mouse_click_event(MouseKey::Right, false),
-            WM_MBUTTONDOWN => manager.send_mouse_click_event(MouseKey::Middle, true),
+            WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => {
+                manager.send_mouse_click_event(MouseKey::Middle, true)
+            }
             WM_MBUTTONUP => manager.send_mouse_click_event(MouseKey::Middle, false),
 
             WM_MOUSEWHEEL => {
