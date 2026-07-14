@@ -292,7 +292,7 @@ pub fn initialize() {
 
         client_api::utils::error_message_box(
             "Unsupported SA:MP",
-            "You have installed an unsupported SA:MP version.\nCurrently supported versions are 0.3.7 R1 and R3.",
+            "You have installed an unsupported SA:MP version.\nCurrently supported versions are 0.3.DL R1, 0.3.7 R1, and 0.3.7 R3.",
         );
 
         // don't waste time

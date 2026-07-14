@@ -9,7 +9,7 @@ This repository is a framework/SDK rather than a standalone mod. Using it requir
 | Area | Supported configuration |
 | --- | --- |
 | Client | Windows x86, Windows 10 or newer |
-| SA:MP client | 0.3.7 R1 and R3; R3-2 is covered by the smoke test |
+| SA:MP client | 0.3.DL R1, 0.3.7 R1, and 0.3.7 R3; DL R1 and R3-2 are covered by smoke tests |
 | CEF | Official stable `windows32` standard distribution, CEF 150 |
 | Rendering | Software BGRA off-screen rendering; GPU and GPU compositing are currently disabled |
 | Media | WebM VP9 + Opus; proprietary H.264 + AAC codecs are not included |
