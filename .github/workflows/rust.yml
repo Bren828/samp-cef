@@ -1,11 +1,16 @@
 name: make-package
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [ master ]
   pull_request:
     branches: [ master ]
   workflow_dispatch:
+  release:
+    types: [published]
 
 env:
   CARGO_TERM_COLOR: always
@@ -279,5 +284,3 @@ jobs:
             target/i686-pc-windows-msvc/release/cef_loader.dll
             target/i686-pc-windows-msvc/release/cef_server.dll
             redist/cef.zip
-        env:
-         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
