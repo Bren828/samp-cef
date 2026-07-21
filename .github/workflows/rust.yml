@@ -266,3 +266,18 @@ jobs:
         with:
           name: cef-interface.dll
           path: target/i686-pc-windows-msvc/release/cef_interface.dll
+
+
+      - name: Upload files to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/i686-pc-windows-msvc/release/cef_client.dll
+            target/i686-pc-windows-msvc/release/cef_interface.dll
+            target/i686-pc-windows-msvc/release/cef-renderer.exe
+            target/i686-pc-windows-msvc/release/cef_loader.dll
+            target/i686-pc-windows-msvc/release/cef_server.dll
+            redist/cef.zip
+        env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
