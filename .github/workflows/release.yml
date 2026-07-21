@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build_client:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Здесь те же шаги, что и в build_client:
+      # - установка Rust
+      # - установка DirectX SDK
+      # - загрузка CEF
+      # - cargo build
+      # - package-client
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            redist/cef.zip
+            target/i686-pc-windows-msvc/release/cef_client.dll
+            target/i686-pc-windows-msvc/release/cef_interface.dll
+            target/i686-pc-windows-msvc/release/cef-renderer.exe
+            target/i686-pc-windows-msvc/release/cef_loader.dll
+            target/i686-pc-windows-msvc/release/cef_server.dll
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
