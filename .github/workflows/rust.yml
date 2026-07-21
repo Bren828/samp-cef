@@ -272,15 +272,26 @@ jobs:
           name: cef-interface.dll
           path: target/i686-pc-windows-msvc/release/cef_interface.dll
 
+  release:
+    if: github.event_name == 'release'
+    needs:
+    - build_server_ubuntu
+    - build_server_debian
+    - build_client
 
-      - name: Upload files to Release
-        if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+
+      - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            target/i686-pc-windows-msvc/release/cef_client.dll
-            target/i686-pc-windows-msvc/release/cef_interface.dll
-            target/i686-pc-windows-msvc/release/cef-renderer.exe
-            target/i686-pc-windows-msvc/release/cef_loader.dll
-            target/i686-pc-windows-msvc/release/cef_server.dll
-            redist/cef.zip
+            release/**/*
