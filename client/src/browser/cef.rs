@@ -37,7 +37,7 @@ fn select_root_cache_path(cef_dir: &Path) -> PathBuf {
     if mutex.is_null() {
         tracing::error!("cannot create CEF cache ownership mutex");
         return cef_dir
-            .join("user_data")
+            .join("cache")
             .join("instances")
             .join(std::process::id().to_string());
     }
@@ -47,11 +47,11 @@ fn select_root_cache_path(cef_dir: &Path) -> PathBuf {
 
     if secondary_instance {
         cef_dir
-            .join("user_data")
+            .join("cache")
             .join("instances")
             .join(std::process::id().to_string())
     } else {
-        cef_dir.join("user_data")
+        cef_dir.join("cache")
     }
 }
 
@@ -198,7 +198,7 @@ mod tests {
         ));
 
         let primary_path = select_root_cache_path(&cef_dir);
-        assert_eq!(primary_path, cef_dir.join("user_data"));
+        assert_eq!(primary_path, cef_dir.join("cache"));
         release_root_cache_mutex();
 
         let mutex_name = cache_mutex_name(&cef_dir);
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(
             secondary_path,
             cef_dir
-                .join("user_data")
+                .join("cache")
                 .join("instances")
                 .join(std::process::id().to_string())
         );
