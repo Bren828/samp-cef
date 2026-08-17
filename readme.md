@@ -49,7 +49,7 @@ Client logging is configured in `<GTA>/cef/config.json`. The `log_level` field a
 
 Server logging also defaults to `info`. Set the `SAMP_CEF_LOG_LEVEL` environment variable to `off`, `error`, `warn`, `info`, `debug`, or `trace` before starting a legacy SA:MP or open.mp server to override it.
 
-Local pages belong in `<GTA>/cef/assets/`. Browser cache, cookies, logs, and per-instance data are stored under `<GTA>/cef/user_data/`.
+Local pages belong in `<GTA>/cef/assets/`. Browser cache, cookies, logs, and per-instance data are stored under `<GTA>/cef/cache/`.
 
 Launch multiplayer through `samp.exe`; starting `gta_sa.exe` directly launches single-player GTA.
 

@@ -180,6 +180,19 @@ fn on_device_created() {
 }
 
 fn on_device_render(_: &mut IDirect3DDevice9) {
+    // EndScene (this hook, via the device proxy) fires as soon as the
+    // device exists - confirmed via a captured cef_client.log to start
+    // right after device creation. drawing_event() (GTA's own render-tick
+    // function at a fixed address) doesn't get called until GTA finishes
+    // its own loading screen and starts real 3D rendering, ~10s later in
+    // that same log - but mainloop() (event queue processing: connecting
+    // to the CEF server, handling CreateBrowser, etc.) was only ever
+    // driven from drawing_event()'s on_render() call, so all of that sat
+    // idle for the entire ~10s gap even though the device/renderer were
+    // already up. Drive it from here too so CEF's own connect/browser
+    // flow isn't gated on GTA's unrelated loading-screen timing.
+    on_render();
+
     if !try_install_present_hook() {
         render();
     }
@@ -218,6 +231,20 @@ fn try_install_present_hook() -> bool {
         let device = device_ptr.read();
 
         if device.is_null() || (*device).lpVtbl.is_null() {
+            // Diagnostic-only, throttled to ~1/sec (this is called every
+            // render tick) - is samp.dll's own cached device pointer the
+            // thing actually holding up Present-hook installation, and for
+            // how long?
+            static LAST_LOG: Mutex<Option<Instant>> = Mutex::new(None);
+            let mut last_log = LAST_LOG.lock();
+            if last_log.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+                tracing::debug!(
+                    device_null = device.is_null(),
+                    "try_install_present_hook: samp.dll device pointer not ready yet"
+                );
+                *last_log = Some(Instant::now());
+            }
+
             return false;
         }
 
@@ -361,6 +388,15 @@ struct RenderState {
 }
 
 extern "C" fn drawing_event() {
+    // Diagnostic-only: pin down whether the multi-second gap before the
+    // Present hook installs is because this render tick simply isn't
+    // firing yet (GTA still on its own loading screen) or because it's
+    // firing but samp.dll hasn't cached its own device pointer yet.
+    static FIRST_CALL: std::sync::Once = std::sync::Once::new();
+    FIRST_CALL.call_once(|| {
+        tracing::debug!("drawing_event: first call observed");
+    });
+
     try_install_dl_rw_render_hook();
 
     if let Some(render) = Render::get() {

@@ -31,7 +31,19 @@ use retour::GenericDetour;
 
 const CEF_SERVER_PORT_OFFSET: u16 = 2;
 pub const CEF_PLUGIN_VERSION: i32 = 0x00_01_00;
-const CONNECT_BACKOFF_BASE: Duration = Duration::from_secs(1);
+// The server only accepts a CEF QUIC connection from a player's IP once
+// its own connection handling has registered that player (allow_connection
+// in server-core) - which happens shortly after, not exactly when, the
+// client sees NetGame::get().addr() become valid. A captured
+// cef_client.log showed the client's first few attempts routinely arrive
+// before that registration lands and get reset, with 3 failed attempts
+// (at the old 1s/2s/4s doubling) burning ~7s before the 4th attempt
+// finally succeeded - almost all of that is this backoff being far more
+// conservative than the server actually needs, not real unavailability.
+// Starting faster costs nothing once the server is actually ready (it'll
+// just succeed on an earlier attempt) and only matters during this
+// brief post-connect window, not sustained retry pressure.
+const CONNECT_BACKOFF_BASE: Duration = Duration::from_millis(250);
 const CONNECT_BACKOFF_MAX: Duration = Duration::from_secs(10);
 const AUDIO_SPATIAL_UPDATE_INTERVAL: Duration = Duration::from_millis(33);
 
@@ -297,6 +309,23 @@ pub fn initialize() {
         // don't waste time
     } else {
         tracing::info!("client initialized");
+
+        // Start the CEF/Chromium runtime bootstrap (subprocess spawn, IPC,
+        // engine init - a few real seconds) right away instead of waiting
+        // for `connect()` to see a SA:MP server address. `cef::initialize`
+        // (see browser/cef.rs) only touches local paths and the process's
+        // own module handle - it never needed the server address or even
+        // the game window (that's only used later, in create_browser()) -
+        // gating it behind "connected to a game server" was just
+        // incidental, not a real dependency, and meant the multi-second
+        // cold start was fully visible right before the login browser
+        // needed to show instead of overlapping with SA:MP's own
+        // connect/loading screens. `initialize_cef()` is idempotent
+        // (guarded by `cef_running`), so `connect()`'s call is now just a
+        // no-op safety net for whatever hasn't warmed up yet by then.
+        if let Some(app) = App::get() {
+            app.manager.lock().initialize_cef();
+        }
     }
 }
 
@@ -328,6 +357,16 @@ fn shitty() {
             mainloop(); //
         }
     }
+}
+
+// Exposed (via cef_client_is_input_blocked in lib.rs) so other injected
+// modules sharing this process - e.g. a launcher's own custom chat overlay -
+// can avoid opening their own UI on top of an active, input-grabbing CEF
+// browser (the login screen, most notably).
+pub fn is_input_blocked() -> bool {
+    App::get()
+        .map(|app| app.manager.lock().is_input_blocked())
+        .unwrap_or(false)
 }
 
 // inside GTA thread
@@ -406,8 +445,14 @@ pub fn mainloop() {
                 }
 
                 Event::DestroyBrowser(id) => {
-                    let mut manager = app.manager.lock();
-                    manager.close_browser(id, true);
+                    let show_cursor = {
+                        let mut manager = app.manager.lock();
+                        manager.close_browser(id, true);
+
+                        manager.is_input_blocked() && !CMenuManager::is_menu_active()
+                    };
+
+                    client_api::samp::inputs::show_cursor(show_cursor);
                 }
 
                 Event::HideBrowser(id, hide) => {

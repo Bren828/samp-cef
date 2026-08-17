@@ -111,11 +111,24 @@ impl RwContainer {
 impl Drop for RwContainer {
     fn drop(&mut self) {
         unsafe {
+            // RwTexture::new() takes ownership of the raster passed to it -
+            // RwTextureDestroy() (the real engine function) already frees
+            // its raster internally as part of tearing down the texture.
+            // `raster` here is only a convenience handle for bytes()/lock()
+            // while the container is alive, not a second, independently-
+            // owned object - destroying it separately after the texture is
+            // already gone is a double free on the same RwRaster, which is
+            // exactly what a captured crash dump showed: RtlFreeHeap
+            // succeeding for the texture's destroy, immediately followed by
+            // a heap-corruption write crashing inside the second, redundant
+            // free.
             if let Some(mut texture) = self.texture.take() {
                 texture.as_mut().destroy();
-            }
-
-            if let Some(mut raster) = self.raster.take() {
+                self.raster.take();
+            } else if let Some(mut raster) = self.raster.take() {
+                // No texture was ever created around this raster (NonNull::new
+                // returned None for `texture` in `new()`) - it's still ours
+                // to free directly.
                 raster.as_mut().destroy();
             }
         }
@@ -248,20 +261,82 @@ impl View {
         if let Some(mut dest) = self.container.as_mut().and_then(|rw| rw.bytes()) {
             let destination_pitch = dest.pitch;
             let source_pitch = self.width.saturating_mul(4);
+            let source_len = bytes.len();
+            let dest_len = dest.len();
             let dest = &mut *dest;
 
             let dest = dest.as_mut_ptr();
             let pixels_origin = bytes.as_ptr();
 
             for cef_rect in rects {
-                for y in cef_rect.y as usize..(cef_rect.y as usize + cef_rect.height as usize) {
+                // CEF's dirty rects describe the browser's *current* size,
+                // reported asynchronously via OnPaint. If a resize raced
+                // with this update, the texture we're holding (`self.width`/
+                // `self.height`, fixed at the last resize()) can be smaller
+                // than what CEF now reports - writing rect-sized spans
+                // straight into `dest`/`pixels_origin` without checking that
+                // is an out-of-bounds write into whatever the RenderWare
+                // raster's allocation happens to sit next to on the heap.
+                // Silently drop anything that doesn't fit both buffers
+                // instead of copying blind; a dropped partial repaint is far
+                // cheaper than a corrupted heap that crashes somewhere
+                // unrelated moments later.
+                if cef_rect.x < 0 || cef_rect.y < 0 || cef_rect.width <= 0 || cef_rect.height <= 0 {
+                    tracing::warn!(?cef_rect, "update_texture: negative/empty dirty rect, skipping");
+                    continue;
+                }
+
+                let (x, y, w, h) = (
+                    cef_rect.x as usize,
+                    cef_rect.y as usize,
+                    cef_rect.width as usize,
+                    cef_rect.height as usize,
+                );
+
+                let Some(row_bytes) = w.checked_mul(4) else {
+                    tracing::warn!(?cef_rect, "update_texture: row width overflow, skipping");
+                    continue;
+                };
+
+                let fits_dest = y.checked_add(h).is_some_and(|bottom| bottom <= self.height)
+                    && x.checked_add(w).is_some_and(|right| right <= self.width);
+
+                if !fits_dest {
+                    tracing::warn!(
+                        ?cef_rect, width = self.width, height = self.height,
+                        "update_texture: dirty rect exceeds current view size, skipping"
+                    );
+                    continue;
+                }
+
+                let mut out_of_bounds = false;
+
+                for row in y..(y + h) {
+                    let destination_index = destination_pitch * row + x * 4;
+                    let source_index = source_pitch * row + x * 4;
+
+                    let dest_row_ok = destination_index.checked_add(row_bytes)
+                        .is_some_and(|end| end <= dest_len);
+                    let source_row_ok = source_index.checked_add(row_bytes)
+                        .is_some_and(|end| end <= source_len);
+
+                    if !dest_row_ok || !source_row_ok {
+                        out_of_bounds = true;
+                        break;
+                    }
+
                     unsafe {
-                        let destination_index = destination_pitch * y + cef_rect.x as usize * 4;
-                        let source_index = source_pitch * y + cef_rect.x as usize * 4;
                         let ptr = dest.add(destination_index);
                         let pixels = pixels_origin.add(source_index);
-                        std::ptr::copy(pixels, ptr, cef_rect.width as usize * 4);
+                        std::ptr::copy(pixels, ptr, row_bytes);
                     }
+                }
+
+                if out_of_bounds {
+                    tracing::warn!(
+                        ?cef_rect, destination_pitch, source_pitch, dest_len, source_len,
+                        "update_texture: computed row exceeds buffer bounds, stopped early"
+                    );
                 }
             }
 
@@ -272,19 +347,66 @@ impl View {
     }
 
     pub fn update_popup(&mut self, bytes: &[u8], popup_rect: &cef_rect_t) {
-        let set_pixels = |dest: &mut [u8], pitch: usize| {
-            let dest = dest.as_mut_ptr();
-            let popup_pitch = popup_rect.width * 4;
+        // Same missing-bounds-check hazard as update_texture (see the
+        // comment there) - CEF popups (autofill/save-password dropdowns
+        // included, not just <select> elements) go through this exact
+        // path via on_popup_show, so a plain password <input> is enough
+        // to reach it even with no explicit popup UI on the page.
+        if popup_rect.x < 0 || popup_rect.y < 0 || popup_rect.width <= 0 || popup_rect.height <= 0 {
+            tracing::warn!(?popup_rect, "update_popup: negative/empty popup rect, skipping");
+            return;
+        }
 
-            for y in 0..popup_rect.height {
-                let source_index = y * popup_pitch;
-                let dest_index = (y + popup_rect.y) * pitch as i32 + popup_rect.x * 4;
+        let width = self.width;
+        let height = self.height;
+        let source_len = bytes.len();
+
+        let (x, y, w, h) = (
+            popup_rect.x as usize,
+            popup_rect.y as usize,
+            popup_rect.width as usize,
+            popup_rect.height as usize,
+        );
+
+        let Some(row_bytes) = w.checked_mul(4) else {
+            tracing::warn!(?popup_rect, "update_popup: row width overflow, skipping");
+            return;
+        };
+
+        let fits_view = y.checked_add(h).is_some_and(|bottom| bottom <= height)
+            && x.checked_add(w).is_some_and(|right| right <= width);
+
+        if !fits_view {
+            tracing::warn!(
+                ?popup_rect, width, height,
+                "update_popup: popup rect exceeds current view size, skipping"
+            );
+            return;
+        }
+
+        let set_pixels = |dest: &mut [u8], pitch: usize| {
+            let dest_len = dest.len();
+            let dest = dest.as_mut_ptr();
+
+            for row in 0..h {
+                let source_index = row * row_bytes;
+                let dest_index = (row + y) * pitch + x * 4;
+
+                let source_ok = source_index.checked_add(row_bytes).is_some_and(|end| end <= source_len);
+                let dest_ok = dest_index.checked_add(row_bytes).is_some_and(|end| end <= dest_len);
+
+                if !source_ok || !dest_ok {
+                    tracing::warn!(
+                        ?popup_rect, pitch, dest_len, source_len,
+                        "update_popup: computed row exceeds buffer bounds, stopped early"
+                    );
+                    break;
+                }
 
                 unsafe {
-                    let surface_data = dest.add(dest_index as usize);
-                    let new_data = bytes.as_ptr().add(source_index as usize);
-
-                    std::ptr::copy(new_data, surface_data, popup_pitch as usize);
+                    let surface_data = dest.add(dest_index);
+                    let new_data = bytes.as_ptr().add(source_index);
+                    std::ptr::copy(new_data, surface_data, row_bytes);
                 }
             }
         };
