@@ -9,7 +9,7 @@ rust-version = "1.93"
 crate-type = ["cdylib"]
 
 [features]
-default = ["crash_logger"]
+default = []
 crash_logger = ["winapi/processthreadsapi", "winapi/psapi", "winapi/excpt", "winapi/fileapi"]
 
 [dependencies]
