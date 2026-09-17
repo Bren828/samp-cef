@@ -89,28 +89,28 @@ impl Render {
 pub fn initialize(manager: Arc<Mutex<Manager>>) {
     tracing::debug!("initializing rendering hooks");
 
-    if client_api::gta::d3d9::set_proxy(None, Some(on_reset)) {
-        tracing::debug!("Direct3D device reset hook installed");
-    } else {
-        client_api::gta::d9_proxy::set_proxy(
-            on_device_created,
-            on_device_render,
-            on_reset,
-            on_device_destroy,
-        );
-        tracing::debug!("Direct3D device creation hook installed");
-    }
+    client_api::gta::d9_proxy::set_proxy(
+        on_device_created,
+        on_device_render,
+        on_reset,
+        on_device_destroy,
+    );
+
+    tracing::debug!("Direct3D device creation hook installed");
 
     let centity_render = unsafe {
-        let render_func: extern "thiscall" fn(*mut CEntity) = std::mem::transmute(OBJECT_RENDER);
-        let centity_render = GenericDetour::new(render_func, centity_render).unwrap();
+        let render_func: extern "thiscall" fn(*mut CEntity) =
+            std::mem::transmute(OBJECT_RENDER);
+        let centity_render =
+            GenericDetour::new(render_func, centity_render).unwrap();
 
         centity_render.enable().unwrap();
         centity_render
     };
 
     let drawing_event = unsafe {
-        let func: DrawingEventFn = std::mem::transmute(DRAWING_EVENT);
+        let func: DrawingEventFn =
+            std::mem::transmute(DRAWING_EVENT);
         let hook = GenericDetour::new(func, drawing_event).unwrap();
 
         hook.enable().unwrap();
@@ -118,7 +118,8 @@ pub fn initialize(manager: Arc<Mutex<Manager>>) {
     };
 
     let shutdown_event = unsafe {
-        let func: ShutdownRwEventFn = std::mem::transmute(SHUTDOWN_RW_EVENT);
+        let func: ShutdownRwEventFn =
+            std::mem::transmute(SHUTDOWN_RW_EVENT);
         let hook = GenericDetour::new(func, shutdown_event).unwrap();
 
         hook.enable().unwrap();
