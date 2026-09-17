@@ -150,7 +150,7 @@ pub fn initialize(manager: Arc<Mutex<Manager>>) {
         RENDER.set(render);
     }
 
-    try_install_present_hook();
+    //try_install_present_hook();
     try_install_dl_rw_render_hook();
 }
 
