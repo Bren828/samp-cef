@@ -350,8 +350,8 @@ fn on_reset(_: &mut IDirect3DDevice9, reset_flag: u8) {
         }
         RESET_FLAG_POST => {
             manager.on_reset_device();
-            let rect = crate::utils::client_rect();
-            manager.resize(rect[0], rect[1]);
+            //let rect = crate::utils::client_rect();
+            //manager.resize(rect[0], rect[1]);
         }
         _ => {}
     }
