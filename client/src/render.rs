@@ -349,7 +349,7 @@ fn on_reset(_: &mut IDirect3DDevice9, reset_flag: u8) {
             //crate::external::call_dxreset();
         }
         RESET_FLAG_POST => {
-            manager.on_reset_device();
+            //manager.on_reset_device();
             //let rect = crate::utils::client_rect();
             //manager.resize(rect[0], rect[1]);
         }
