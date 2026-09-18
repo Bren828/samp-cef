@@ -346,7 +346,7 @@ fn on_reset(_: &mut IDirect3DDevice9, reset_flag: u8) {
         RESET_FLAG_PRE => {
             manager.on_lost_device();
             drop(manager);
-            crate::external::call_dxreset();
+            //crate::external::call_dxreset();
         }
         RESET_FLAG_POST => {
             manager.on_reset_device();
